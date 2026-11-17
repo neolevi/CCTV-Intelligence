@@ -22,54 +22,66 @@ def get_analytics_overview(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieve top-level KPI analytics for today and the past week."""
+    """Retrieve top-level KPI analytics for today and the past week scoped to user."""
     today = datetime.datetime.now().date()
     today_start = datetime.datetime.combine(today, datetime.time.min)
     today_end = datetime.datetime.combine(today, datetime.time.max)
     week_start = today_start - datetime.timedelta(days=7)
 
-    # Today's events
-    events_today_count = (
-        db.query(func.count(models.MotionEvent.id))
-        .filter(models.MotionEvent.start_time >= today_start, models.MotionEvent.start_time <= today_end)
-        .scalar()
-        or 0
+    # Scoped event query
+    ev_q = db.query(func.count(models.MotionEvent.id)).filter(
+        models.MotionEvent.start_time >= today_start,
+        models.MotionEvent.start_time <= today_end,
     )
+    if current_user.role != "admin":
+        ev_q = ev_q.filter((models.MotionEvent.user_id == current_user.id) | (models.MotionEvent.user_id == None))
+    events_today_count = ev_q.scalar() or 0
 
-    # Recordings count
-    recordings_count = db.query(func.count(models.Recording.id)).scalar() or 0
+    # Scoped recordings count & bytes
+    rec_q = db.query(models.Recording)
+    if current_user.role != "admin":
+        rec_q = rec_q.filter((models.Recording.user_id == current_user.id) | (models.Recording.user_id == None))
+    recordings = rec_q.all()
+    recordings_count = len(recordings)
+    total_rec_bytes = sum(r.file_size_bytes or 0 for r in recordings)
 
-    # Total storage used
-    rec_bytes = db.query(func.sum(models.Recording.file_size_bytes)).scalar() or 0
-    frame_count = db.query(func.count(models.CapturedFrame.id)).scalar() or 0
-    total_storage = rec_bytes + (frame_count * 50 * 1024)
+    # Scoped frames
+    frame_q = db.query(models.CapturedFrame)
+    if current_user.role != "admin":
+        frame_q = frame_q.filter((models.CapturedFrame.user_id == current_user.id) | (models.CapturedFrame.user_id == None))
+    frames = frame_q.all()
+    total_frame_bytes = sum(f.file_size_bytes or 0 for f in frames)
+    total_storage = total_rec_bytes + total_frame_bytes
 
     # Sessions today
-    sessions_today = (
-        db.query(models.MonitoringSession)
-        .filter(models.MonitoringSession.start_time >= today_start, models.MonitoringSession.start_time <= today_end)
-        .all()
+    sess_q = db.query(models.MonitoringSession).filter(
+        models.MonitoringSession.start_time >= today_start,
+        models.MonitoringSession.start_time <= today_end,
     )
+    if current_user.role != "admin":
+        sess_q = sess_q.filter((models.MonitoringSession.user_id == current_user.id) | (models.MonitoringSession.user_id == None))
+    sessions_today = sess_q.all()
 
-    active_sec = sum(s.active_duration_seconds or 0.0 for s in sessions_today)
-    idle_sec = sum(s.idle_duration_seconds or 0.0 for s in sessions_today)
-    deep_idle_sec = sum(s.deep_idle_duration_seconds or 0.0 for s in sessions_today)
+    active_sec = sum(s.active_duration_seconds or 0.0 for s in sessions_today if s.status == "completed")
+    idle_sec = sum(s.idle_duration_seconds or 0.0 for s in sessions_today if s.status == "completed")
+    deep_idle_sec = sum(s.deep_idle_duration_seconds or 0.0 for s in sessions_today if s.status == "completed")
 
-    if camera_manager.is_monitoring:
+    # Add live telemetry additively if user owns session or is admin
+    if camera_manager.is_monitoring and (current_user.role == "admin" or camera_manager.user_id == current_user.id or camera_manager.user_id is None):
         cam_status = camera_manager.get_status()
-        active_sec = max(active_sec, cam_status["active_seconds"])
-        idle_sec = max(idle_sec, cam_status["idle_seconds"])
-        deep_idle_sec = max(deep_idle_sec, cam_status["deep_idle_seconds"])
+        active_sec += cam_status["active_seconds"]
+        idle_sec += cam_status["idle_seconds"]
+        deep_idle_sec += cam_status["deep_idle_seconds"]
 
     total_monitored_today = active_sec + idle_sec + deep_idle_sec
     active_ratio = round((active_sec / total_monitored_today) * 100.0, 1) if total_monitored_today > 0 else 0.0
 
     # Monitoring hours this week
-    sessions_week = (
-        db.query(models.MonitoringSession)
-        .filter(models.MonitoringSession.start_time >= week_start)
-        .all()
-    )
+    week_q = db.query(models.MonitoringSession).filter(models.MonitoringSession.start_time >= week_start)
+    if current_user.role != "admin":
+        week_q = week_q.filter((models.MonitoringSession.user_id == current_user.id) | (models.MonitoringSession.user_id == None))
+    sessions_week = week_q.all()
+
     week_seconds = sum(
         (
             (s.end_time - s.start_time).total_seconds()
@@ -78,7 +90,7 @@ def get_analytics_overview(
         )
         for s in sessions_week
     )
-    if camera_manager.is_monitoring:
+    if camera_manager.is_monitoring and (current_user.role == "admin" or camera_manager.user_id == current_user.id or camera_manager.user_id is None):
         week_seconds += camera_manager.get_status()["uptime_seconds"]
 
     return {
@@ -129,27 +141,36 @@ def get_analytics_trends(
             storage_trends.append(cumulative_storage)
         else:
             # Query sessions & events directly
-            sessions = (
-                db.query(models.MonitoringSession)
-                .filter(models.MonitoringSession.start_time >= start_dt, models.MonitoringSession.start_time <= end_dt)
-                .all()
+            sess_q = db.query(models.MonitoringSession).filter(
+                models.MonitoringSession.start_time <= end_dt,
+                (models.MonitoringSession.end_time == None) | (models.MonitoringSession.end_time >= start_dt),
             )
-            ev_count = (
-                db.query(func.count(models.MotionEvent.id))
-                .filter(models.MotionEvent.start_time >= start_dt, models.MotionEvent.start_time <= end_dt)
-                .scalar()
-                or 0
+            ev_q = db.query(func.count(models.MotionEvent.id)).filter(
+                models.MotionEvent.start_time >= start_dt,
+                models.MotionEvent.start_time <= end_dt,
             )
+            if current_user.role != "admin":
+                sess_q = sess_q.filter(
+                    (models.MonitoringSession.user_id == current_user.id)
+                    | (models.MonitoringSession.user_id == None)
+                )
+                ev_q = ev_q.filter(
+                    (models.MotionEvent.user_id == current_user.id)
+                    | (models.MotionEvent.user_id == None)
+                )
 
-            a_sec = sum(s.active_duration_seconds or 0 for s in sessions)
-            i_sec = sum(s.idle_duration_seconds or 0 for s in sessions)
-            d_sec = sum(s.deep_idle_duration_seconds or 0 for s in sessions)
+            sessions = sess_q.all()
+            ev_count = ev_q.scalar() or 0
 
-            if target_date == today and camera_manager.is_monitoring:
+            a_sec = sum(s.active_duration_seconds or 0 for s in sessions if s.status == "completed")
+            i_sec = sum(s.idle_duration_seconds or 0 for s in sessions if s.status == "completed")
+            d_sec = sum(s.deep_idle_duration_seconds or 0 for s in sessions if s.status == "completed")
+
+            if target_date == today and camera_manager.is_monitoring and (current_user.role == "admin" or camera_manager.user_id == current_user.id or camera_manager.user_id is None):
                 status = camera_manager.get_status()
-                a_sec = max(a_sec, status["active_seconds"])
-                i_sec = max(i_sec, status["idle_seconds"])
-                d_sec = max(d_sec, status["deep_idle_seconds"])
+                a_sec += status["active_seconds"]
+                i_sec += status["idle_seconds"]
+                d_sec += status["deep_idle_seconds"]
 
             active_durations.append(round(a_sec / 60.0, 1))
             idle_durations.append(round(i_sec / 60.0, 1))

@@ -92,7 +92,7 @@ def stream_recording_video(
 def download_recording_video(
     recording_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
     """Download the raw video recording file."""
     rec = db.query(models.Recording).filter(models.Recording.id == recording_id).first()

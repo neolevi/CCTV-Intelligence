@@ -81,7 +81,7 @@ class CameraManager:
         self.active_seconds: float = 0.0
         self.idle_seconds: float = 0.0
         self.deep_idle_seconds: float = 0.0
-        self.last_loop_time: float = time.time()
+        self.last_loop_time: float = time.monotonic()
         self.current_fps: float = 0.0
 
         # Virtual animation state
@@ -354,13 +354,13 @@ class CameraManager:
 
     def _capture_loop(self) -> None:
         """Dedicated thread executing frame acquisition, motion analysis, and sampling."""
-        fps_tracker_time = time.time()
+        fps_tracker_time = time.monotonic()
         fps_frame_counter = 0
         consecutive_read_failures = 0
 
         try:
             while not self.stop_event.is_set():
-                loop_start = time.time()
+                loop_start = time.monotonic()
                 dt = loop_start - self.last_loop_time
                 self.last_loop_time = loop_start
 
@@ -440,7 +440,7 @@ class CameraManager:
                         self.latest_jpeg_bytes = jpeg.tobytes()
 
                 # Target ~25-30 FPS loop rate
-                elapsed = time.time() - loop_start
+                elapsed = time.monotonic() - loop_start
                 sleep_needed = max(0.005, (1.0 / 30.0) - elapsed)
                 time.sleep(sleep_needed)
         finally:

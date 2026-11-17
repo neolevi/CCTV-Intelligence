@@ -55,7 +55,7 @@ class AdaptiveSampler:
         Determines whether the incoming frame at current_time should be captured.
         Prevents duplicate captures and guarantees accurate frame intervals.
         """
-        now = current_time if current_time is not None else time.time()
+        now = current_time if current_time is not None else time.monotonic()
         self.current_state = activity_state
         self.total_frames_evaluated += 1
 

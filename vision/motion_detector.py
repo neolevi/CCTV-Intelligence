@@ -38,8 +38,8 @@ class MotionDetector:
 
         # Internal state tracking
         self.current_state = "IDLE"  # "ACTIVE", "IDLE", "DEEP_IDLE"
-        self.last_motion_time = time.time()
-        self.state_enter_time = time.time()
+        self.last_motion_time = time.monotonic()
+        self.state_enter_time = time.monotonic()
         self.last_motion_score = 0.0
         self.is_motion_detected = False
 
@@ -77,7 +77,7 @@ class MotionDetector:
         Returns:
             (activity_state, motion_score, is_motion_detected, fg_mask)
         """
-        now = time.time()
+        now = time.monotonic()
         h, w = frame.shape[:2]
 
         # 1. Resize for fast processing if larger than processing target
@@ -134,7 +134,7 @@ class MotionDetector:
 
     def get_status(self) -> Dict[str, Any]:
         """Return the current motion detection telemetry."""
-        now = time.time()
+        now = time.monotonic()
         time_since_motion = now - self.last_motion_time
         remaining_active = max(0.0, self.idle_timeout - time_since_motion)
 

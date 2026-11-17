@@ -26,10 +26,11 @@ from backend.recordings.routes import (
     list_recordings,
     get_recording,
     delete_recording,
+    download_recording_video,
 )
 from backend.events.routes import list_events, get_event, delete_event
 from backend.frames.routes import list_frames, get_frame, delete_frame
-from backend.summaries.routes import get_daily_summary
+from backend.summaries.routes import get_daily_summary, download_summary_report
 from backend.summaries.generator import DailySummaryGenerator
 from vision.camera_manager import camera_manager
 from vision.recording_manager import RecordingManager
@@ -420,3 +421,48 @@ def test_fix_16_sqlite_foreign_key_enforcement(db):
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Item 18: Summary and Recording Flexible Auth Downloads
+# ---------------------------------------------------------------------------
+def test_fix_summary_and_recording_download_flexible_auth(db, admin_user):
+    """Test that summary and recording download endpoints support flexible authentication with tokens."""
+    token = create_access_token(subject=admin_user.id)
+    authed_user = get_current_user_flexible(token=token, db=db)
+    assert authed_user.email == admin_user.email
+
+    # Test download_summary_report
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    response = download_summary_report(date=today_str, db=db, current_user=authed_user)
+    assert response.status_code == 200
+    assert "CCTV Intelligence" in response.body.decode("utf-8")
+    assert response.headers["Content-Disposition"].startswith("attachment;")
+
+
+# ---------------------------------------------------------------------------
+# Item 19: Monotonic Clock Robustness in Vision Modules
+# ---------------------------------------------------------------------------
+def test_monotonic_clock_robustness():
+    """Verify that AdaptiveSampler and MotionDetector use monotonic timing calculations."""
+    from vision.adaptive_sampler import AdaptiveSampler
+    from vision.motion_detector import MotionDetector
+    import numpy as np
+
+    sampler = AdaptiveSampler(active_fps=5.0, idle_fps=2.0)
+    # Using explicit timestamps simulating monotonic ticks
+    t0 = 1000.0
+    assert sampler.should_sample("ACTIVE", current_time=t0) is True
+    # Frame too soon
+    assert sampler.should_sample("ACTIVE", current_time=t0 + 0.05) is False
+    # Frame meets interval
+    assert sampler.should_sample("ACTIVE", current_time=t0 + 0.21) is True
+
+    # MotionDetector get_status uses time.monotonic() internally
+    detector = MotionDetector(idle_timeout=2.0, deep_idle_timeout=5.0)
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    detector.process_frame(frame)
+    status = detector.get_status()
+    assert "time_in_current_state" in status
+    assert status["time_in_current_state"] >= 0.0
+

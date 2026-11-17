@@ -166,17 +166,58 @@ python start.py --test
 
 ---
 
-## 6. Default Credentials
+## 6. Security, Authentication & First-Run Configuration
 
-The database is seeded with a default surveillance administrator account:
-- **Email:** `admin@cctv.local`
-- **Password:** `AdminPass123!`
+### Secure Configuration & JWT Secrets
+- **Cryptographic JWT Secret:** By default, if `JWT_SECRET` is not set in `.env`, the system automatically generates an ephemeral cryptographically strong 64-character secret. In production, define `JWT_SECRET` in `.env`.
+- **CORS Policy:** Strict origin control configurable via `CORS_ORIGINS` (defaults to `http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000`). Wildcard credentials mode is prohibited.
+- **WebSocket Telemetry Authentication:** The `/api/ws/telemetry` endpoint requires authentication via `?token=<jwt_token>`. Unauthenticated sockets are closed with code `1008 (Policy Violation)`.
+- **Media & Stream Protection:** All live streams, recorded MP4 clips, thumbnails, frame images, and markdown reports enforce authentication via Bearer token or URL token parameter (`?token=...`).
 
-New user registration is also available directly on the sign-in page.
+### Administrator Setup & Credentials
+- **First-Run Password:** Set `ADMIN_PASSWORD` in your `.env` file before initial startup. If unset during first-time initialization, the system generates a secure random password and reports it safely.
+- **Argon2 Password Hashing:** All operator and administrator passwords are cryptographically hashed using Argon2 with salt before persistence.
+- **User Ownership & Isolation:** All cameras, monitoring sessions, recordings, frames, and motion events are strictly scoped to the owning operator. Non-admin users cannot access or delete other operators' surveillance data.
 
 ---
 
-## 7. Interactive Testing with Virtual Camera
+## 7. Database Integrity & Alembic Migrations
+
+- **Foreign Key Enforcement:** SQLite enforces relational integrity via `PRAGMA foreign_keys = ON;` on every database connection.
+- **User Ownership Architecture:** Relational foreign keys (`user_id`) link `cameras`, `monitoring_sessions`, `motion_events`, `captured_frames`, and `recordings` to `users(id)`.
+- **Database Migrations:** Schema migrations are managed via **Alembic**:
+  ```powershell
+  # Apply all migrations to latest version
+  alembic upgrade head
+
+  # Check current revision
+  alembic current
+  ```
+
+---
+
+## 8. Hardware Honesty & Simulation Mode
+
+- **Physical Cameras vs. Virtual Simulation:**
+  - Standard physical USB/DirectShow cameras (Index `0`, `1`, etc.) are probed safely.
+  - If a physical camera is disconnected or fails to initialize, the system raises an explicit HTTP 400 error and sets the camera status to `error`. It **never silently replaces a failing physical camera with simulated footage**.
+  - For headless servers, automated CI testing, or machines without cameras, select the dedicated **"Simulated CCTV Feed (Virtual Sensor)"** (Device Index `-1`).
+
+---
+
+## 9. Adaptive Sampling & Video Synchronization
+
+- **1:1 Playback Synchronization:** The OpenCV `VideoWriter` recording FPS is calibrated to match the sampled frame rate (`ACTIVE_SAMPLING_FPS = 5.0`). Only sampled frames are passed to the video writer, ensuring 1:1 real-time video playback without speed distortions.
+- **Monotonic Clock Precision:** Scene motion duration and frame intervals use `time.monotonic()` to guarantee immunity to system wall-clock adjustments or NTP shifts.
+- **Automated Daily Summary Timeline:**
+  - 48 half-hour segments across 24 hours categorized accurately into `ACTIVE`, `IDLE`, `DEEP_IDLE`, and `OFFLINE`.
+  - Additive duration aggregation for multiple surveillance sessions within the same day.
+  - Automatic boundary clamping for sessions crossing midnight.
+  - Actual storage consumption calculated from genuine on-disk file sizes.
+
+---
+
+## 10. Interactive Testing with Virtual Camera
 
 If your computer does not have a physical webcam attached, CCTV Intelligence automatically falls back to its **Simulated Surveillance Sensor**:
 1. Log in with the default admin credentials.
@@ -191,7 +232,7 @@ If your computer does not have a physical webcam attached, CCTV Intelligence aut
 
 ---
 
-## 8. REST API Documentation
+## 11. REST API Documentation
 
 FastAPI provides interactive Swagger UI documentation at:
 - **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
@@ -230,7 +271,7 @@ FastAPI provides interactive Swagger UI documentation at:
 
 ---
 
-## 9. Automated Testing
+## 12. Automated Testing
 
 The automated test suite covers the entire surveillance pipeline without requiring external camera hardware:
 ```powershell
@@ -245,8 +286,9 @@ python start.py --test
 - **Vision Pipeline (`tests/vision/`):** Motion detector initialization, static scene suppression, motion detection on moving objects, state hysteresis, adaptive sampler FPS calculations, camera manager lifecycle, and recording manager video writing.
 - **Backend Services (`tests/backend/`):** Password hashing, JWT token lifecycle, login, registration, duplicate prevention, settings mutation, analytics aggregation, and daily summary generation.
 - **Integration (`tests/integration/`):** Full end-to-end loop: camera start → simulated motion injection → MOG2 detection → adaptive sampling → database event creation → video file finalization → daily summary synthesis.
+- **Regression & Hardening (`tests/backend/test_regression_fixes.py`):** 19 specific regression checks covering flexible auth, thread termination, midnight crossings, monotonic clocks, and storage computation.
 
 ---
 
-## 10. License
+## 13. License
 This project is licensed under the MIT License.

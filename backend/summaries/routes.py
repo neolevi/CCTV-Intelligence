@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend import models, schemas
-from backend.auth.routes import get_current_user
+from backend.auth.routes import get_current_user, get_current_user_flexible
 from backend.summaries.generator import DailySummaryGenerator
 
 router = APIRouter(prefix="/api/summaries", tags=["Daily Summaries"])
@@ -80,7 +80,7 @@ def generate_daily_summary(
 def download_summary_report(
     date: str,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
     """Download comprehensive daily surveillance report in formatted Markdown text."""
     valid_date = validate_date_param(date)

@@ -4,11 +4,13 @@ CCTV Intelligence — Application Launch & Orchestration Script.
 Starts backend FastAPI service and frontend Vite development server concurrently.
 """
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -47,6 +49,25 @@ def run_tests():
     return res.returncode
 
 
+def wait_for_backend_health(url: str = "http://127.0.0.1:8000/api/health", timeout_sec: float = 15.0) -> bool:
+    """Poll the backend health check endpoint until active or timeout."""
+    start_t = time.time()
+    print("[BACKEND] Waiting for backend service readiness check...")
+    while time.time() - start_t < timeout_sec:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "CCTV-Intelligence-Startup"})
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("status") == "healthy":
+                        print(f"[READY] Backend responded healthy in {time.time() - start_t:.1f}s.")
+                        return True
+        except Exception:
+            time.sleep(0.4)
+    print(f"[WARNING] Backend did not respond within {timeout_sec}s.")
+    return False
+
+
 def start_backend():
     """Launch FastAPI backend server on port 8000."""
     print("[BACKEND] Launching FastAPI server on http://127.0.0.1:8000 ...")
@@ -62,7 +83,6 @@ def start_backend():
             "127.0.0.1",
             "--port",
             "8000",
-            "--reload",
         ],
         cwd=str(PROJECT_ROOT),
         env=env,
@@ -93,33 +113,40 @@ def main():
     if args.test:
         sys.exit(run_tests())
 
-    # Always ensure DB is initialized
-    init_database()
+    # Ensure DB is initialized; abort if initialization fails
+    db_rc = init_database()
+    if db_rc != 0:
+        print("[CRITICAL] Database initialization failed. Aborting application startup.")
+        sys.exit(db_rc)
 
     processes = []
 
     print("\n" + "=" * 60)
     print("   CCTV INTELLIGENCE — SURVEILLANCE & DAILY SUMMARIZATION")
     print("=" * 60)
-    print(" Default Operator Credentials:")
-    print("   Email:    admin@cctv.local")
-    print("   Password: AdminPass123!")
+    print(" System operator initialized. Configuration loaded securely from .env.")
     print("=" * 60 + "\n")
 
     try:
         if args.backend:
             proc = start_backend()
             processes.append(proc)
+            wait_for_backend_health()
             proc.wait()
         elif args.frontend:
             proc = start_frontend()
             processes.append(proc)
             proc.wait()
         else:
-            # Concurrently launch both
+            # Concurrently launch both services with proper health readiness polling
             b_proc = start_backend()
             processes.append(b_proc)
-            time.sleep(1.0)
+
+            is_ready = wait_for_backend_health()
+            if not is_ready and b_proc.poll() is not None:
+                print("[CRITICAL] Backend process terminated unexpectedly during startup.")
+                sys.exit(1)
+
             f_proc = start_frontend()
             processes.append(f_proc)
 

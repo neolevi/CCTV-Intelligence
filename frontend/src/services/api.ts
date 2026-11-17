@@ -248,7 +248,8 @@ class ApiService {
   }
 
   getSummaryDownloadUrl(date: string): string {
-    return `${API_BASE}/api/summaries/${date}/download`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/summaries/${date}/download${tokenParam}`;
   }
 
   // --- Analytics APIs ---

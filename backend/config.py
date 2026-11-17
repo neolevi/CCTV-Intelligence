@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@cctv.local")
     ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "AdminPass123!")
+    CORS_ORIGINS: str = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+    )
 
     # Database
     DATABASE_URL: str = f"sqlite:///{PROJECT_ROOT / 'cctv_intelligence.db'}"

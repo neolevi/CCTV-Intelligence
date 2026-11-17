@@ -24,7 +24,7 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> models.User:
     """Dependency that extracts and validates the JWT bearer token, returning the current user."""
-    if not credentials or not credentials.credentials:
+    if not isinstance(credentials, HTTPAuthorizationCredentials) or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials were not provided",
@@ -72,9 +72,9 @@ def get_current_user_flexible(
     or query parameter ?token=... (for media streams, images, and video players).
     """
     raw_token = None
-    if credentials and credentials.credentials:
+    if isinstance(credentials, HTTPAuthorizationCredentials) and credentials.credentials:
         raw_token = credentials.credentials
-    elif token:
+    elif isinstance(token, str) and token:
         raw_token = token
 
     if not raw_token:
