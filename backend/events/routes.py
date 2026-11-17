@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend import models, schemas
-from backend.auth.routes import get_current_user
+from backend.auth.routes import get_current_user, get_current_user_flexible
 
 router = APIRouter(prefix="/api/events", tags=["Motion Events"])
 
@@ -23,8 +23,11 @@ def list_events(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """List detected motion events with date, state, and keyword filtering."""
+    """List detected motion events with date, state, and keyword filtering scoped to authorization."""
     query = db.query(models.MotionEvent)
+
+    if current_user.role != "admin":
+        query = query.filter((models.MotionEvent.user_id == current_user.id) | (models.MotionEvent.user_id == None))
 
     if date:
         try:
@@ -33,7 +36,10 @@ def list_events(
             end = datetime.datetime.combine(d, datetime.time.max)
             query = query.filter(models.MotionEvent.start_time >= start, models.MotionEvent.start_time <= end)
         except ValueError:
-            pass
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Expected YYYY-MM-DD",
+            )
 
     if activity_state:
         query = query.filter(models.MotionEvent.activity_state == activity_state.upper())
@@ -55,6 +61,9 @@ def get_event(
     event = db.query(models.MotionEvent).filter(models.MotionEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    if current_user.role != "admin" and event.user_id and event.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this event")
 
     frames = (
         db.query(models.CapturedFrame)
@@ -82,11 +91,15 @@ def get_event(
 def get_event_thumbnail(
     event_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
-    """Stream the thumbnail image for an event."""
+    """Stream the thumbnail image for an event with authentication."""
     event = db.query(models.MotionEvent).filter(models.MotionEvent.id == event_id).first()
     if not event or not event.thumbnail_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail not found")
+
+    if current_user.role != "admin" and event.user_id and event.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this event")
 
     p = Path(event.thumbnail_path)
     if not p.exists():
@@ -105,6 +118,9 @@ def delete_event(
     event = db.query(models.MotionEvent).filter(models.MotionEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    if current_user.role != "admin" and event.user_id and event.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this event")
 
     if event.thumbnail_path:
         try:

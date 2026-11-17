@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend import models, schemas
-from backend.auth.routes import get_current_user
+from backend.auth.routes import get_current_user, get_current_user_flexible
 
 router = APIRouter(prefix="/api/recordings", tags=["Video Recordings"])
 
@@ -23,8 +23,12 @@ def list_recordings(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """List available surveillance video recordings."""
+    """List available surveillance video recordings scoped to user authorization."""
     query = db.query(models.Recording)
+
+    # User authorization: non-admins only see recordings they own or default system recordings
+    if current_user.role != "admin":
+        query = query.filter((models.Recording.user_id == current_user.id) | (models.Recording.user_id == None))
 
     if date:
         try:
@@ -33,7 +37,10 @@ def list_recordings(
             end = datetime.datetime.combine(d, datetime.time.max)
             query = query.filter(models.Recording.start_time >= start, models.Recording.start_time <= end)
         except ValueError:
-            pass
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Expected YYYY-MM-DD",
+            )
 
     if activity_state:
         query = query.filter(models.Recording.activity_state == activity_state.upper())
@@ -52,6 +59,10 @@ def get_recording(
     rec = db.query(models.Recording).filter(models.Recording.id == recording_id).first()
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this recording")
+
     return rec
 
 
@@ -59,11 +70,15 @@ def get_recording(
 def stream_recording_video(
     recording_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
-    """Stream recording video for direct in-browser HTML5 video playback."""
+    """Stream recording video for direct in-browser HTML5 video playback with authentication."""
     rec = db.query(models.Recording).filter(models.Recording.id == recording_id).first()
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this recording")
 
     p = Path(rec.file_path)
     if not p.exists():
@@ -84,6 +99,9 @@ def download_recording_video(
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
 
+    if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this recording")
+
     p = Path(rec.file_path)
     if not p.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video file missing from disk")
@@ -99,11 +117,15 @@ def download_recording_video(
 def get_recording_thumbnail(
     recording_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
-    """Serve thumbnail image for the recording."""
+    """Serve thumbnail image for the recording with authentication."""
     rec = db.query(models.Recording).filter(models.Recording.id == recording_id).first()
     if not rec or not rec.thumbnail_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail not found")
+
+    if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this recording")
 
     p = Path(rec.thumbnail_path)
     if not p.exists():
@@ -122,6 +144,9 @@ def delete_recording(
     rec = db.query(models.Recording).filter(models.Recording.id == recording_id).first()
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this recording")
 
     # Remove video file
     try:

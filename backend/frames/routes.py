@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend import models, schemas
-from backend.auth.routes import get_current_user
+from backend.auth.routes import get_current_user, get_current_user_flexible
 
 router = APIRouter(prefix="/api/frames", tags=["Captured Frames"])
 
@@ -21,8 +21,11 @@ def list_frames(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieve saved surveillance frames with optional filtering."""
+    """Retrieve saved surveillance frames scoped to authorization."""
     query = db.query(models.CapturedFrame)
+
+    if current_user.role != "admin":
+        query = query.filter((models.CapturedFrame.user_id == current_user.id) | (models.CapturedFrame.user_id == None))
 
     if activity_state:
         query = query.filter(models.CapturedFrame.activity_state == activity_state.upper())
@@ -43,6 +46,10 @@ def get_frame(
     frame = db.query(models.CapturedFrame).filter(models.CapturedFrame.id == frame_id).first()
     if not frame:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Frame not found")
+
+    if current_user.role != "admin" and frame.user_id and frame.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this frame")
+
     return frame
 
 
@@ -50,11 +57,15 @@ def get_frame(
 def get_frame_image(
     frame_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user_flexible),
 ):
-    """Return the raw JPEG image for a captured frame."""
+    """Return the raw JPEG image for a captured frame with authentication."""
     frame = db.query(models.CapturedFrame).filter(models.CapturedFrame.id == frame_id).first()
     if not frame:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Frame not found")
+
+    if current_user.role != "admin" and frame.user_id and frame.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this frame")
 
     p = Path(frame.file_path)
     if not p.exists():
@@ -73,6 +84,9 @@ def delete_frame(
     frame = db.query(models.CapturedFrame).filter(models.CapturedFrame.id == frame_id).first()
     if not frame:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Frame not found")
+
+    if current_user.role != "admin" and frame.user_id and frame.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this frame")
 
     try:
         p = Path(frame.file_path)

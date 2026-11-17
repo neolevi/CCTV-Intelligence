@@ -48,6 +48,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   const [activeEvent, setActiveEvent] = useState<MotionEvent | null>(null);
 
+  const fetchSummary = async () => {
+    try {
+      const summary = await api.getDailySummary();
+      setDailySummary(summary);
+    } catch {
+      // transient network error
+    }
+  };
+
   // Fetch initial data & periodic refresh
   useEffect(() => {
     // 1. Fetch available devices
@@ -58,16 +67,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
       }
     }).catch(() => {});
 
+    // 2. Initial summary load
+    fetchSummary();
+
+    // 3. Fast telemetry refresh (camera status, recent events & recordings)
     const refreshData = async () => {
       try {
-        const [status, summary, events, recordings] = await Promise.all([
+        const [status, events, recordings] = await Promise.all([
           api.getCameraStatus(),
-          api.getDailySummary(),
           api.listEvents({ limit: 6 }),
           api.listRecordings({ limit: 6 }),
         ]);
         setCameraStatus(status);
-        setDailySummary(summary);
         setRecentEvents(events);
         setRecentRecordings(recordings);
       } catch (err) {
@@ -76,15 +87,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
     };
 
     refreshData();
-    const interval = setInterval(refreshData, 3000); // 3-second polling for metrics
+    const telemetryInterval = setInterval(refreshData, 3000); // 3-second polling for live status only
+    const summaryInterval = setInterval(fetchSummary, 60000); // 60-second polling for daily summary (avoids 3s re-writes)
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(telemetryInterval);
+      clearInterval(summaryInterval);
+    };
   }, []);
 
   const handleStartMonitoring = async () => {
     try {
       const resp = await api.startMonitoring(1, selectedDeviceIndex);
       setCameraStatus(resp.status);
+      setTimeout(fetchSummary, 1000);
     } catch (err: any) {
       alert(err.message || 'Failed to start camera monitoring.');
     }
@@ -94,6 +110,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     try {
       const resp = await api.stopMonitoring();
       setCameraStatus(resp.status);
+      setTimeout(fetchSummary, 1000);
     } catch (err: any) {
       alert(err.message || 'Failed to stop camera monitoring.');
     }
@@ -250,14 +267,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
               border: '1px solid var(--border-color)',
             }}
           >
-            <img
-              src={api.getLiveStreamUrl()}
-              alt="CCTV Surveillance Stream"
-              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-              onError={(e) => {
-                // If stream reconnecting
-              }}
-            />
+            {cameraStatus?.is_monitoring ? (
+              <img
+                src={api.getLiveStreamUrl()}
+                alt="CCTV Surveillance Stream"
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                onError={(e) => {
+                  // If stream reconnecting
+                }}
+              />
+            ) : (
+              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                <Video size={48} style={{ margin: '0 auto 1rem', opacity: 0.4 }} />
+                <h4 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem', fontWeight: 600 }}>Surveillance Standby</h4>
+                <p style={{ fontSize: '0.875rem', marginBottom: '1.25rem' }}>Camera monitoring is currently inactive.</p>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleStartMonitoring}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0 auto' }}
+                >
+                  <Play size={16} /> Start Live Monitoring
+                </button>
+              </div>
+            )}
 
             {/* Motion Intensity Gauge Overlay */}
             {cameraStatus?.is_monitoring && (

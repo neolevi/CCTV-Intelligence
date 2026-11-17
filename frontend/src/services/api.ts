@@ -15,7 +15,21 @@ import {
   User,
 } from '../types';
 
-const API_BASE = 'http://localhost:8000';
+const getApiBase = (): string => {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE) {
+    return (import.meta as any).env.VITE_API_BASE;
+  }
+  if (typeof window !== 'undefined') {
+    // If running in production or behind reverse proxy
+    if (window.location.port !== '5173' && window.location.port !== '3000') {
+      return '';
+    }
+    return `http://${window.location.hostname}:8000`;
+  }
+  return 'http://localhost:8000';
+};
+
+const API_BASE = getApiBase();
 
 class ApiService {
   private token: string | null = null;
@@ -49,10 +63,15 @@ class ApiService {
       headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+      });
+    } catch (networkError: any) {
+      throw new Error(`Unable to connect to CCTV backend server at ${API_BASE || 'origin'}. Please check if the backend service is running.`);
+    }
 
     if (response.status === 401) {
       this.setToken(null);
@@ -133,7 +152,8 @@ class ApiService {
   }
 
   getLiveStreamUrl(): string {
-    return `${API_BASE}/api/camera/stream?t=${Date.now()}`;
+    const tokenParam = this.token ? `&token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/camera/stream?t=${Date.now()}${tokenParam}`;
   }
 
   // --- Motion APIs ---
@@ -156,7 +176,8 @@ class ApiService {
   }
 
   getFrameImageUrl(frameId: number): string {
-    return `${API_BASE}/api/frames/${frameId}/image`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/frames/${frameId}/image${tokenParam}`;
   }
 
   async deleteFrame(frameId: number): Promise<{ message: string }> {
@@ -179,7 +200,8 @@ class ApiService {
   }
 
   getEventThumbnailUrl(eventId: number): string {
-    return `${API_BASE}/api/events/${eventId}/thumbnail`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/events/${eventId}/thumbnail${tokenParam}`;
   }
 
   async deleteEvent(eventId: number): Promise<{ message: string }> {
@@ -197,15 +219,18 @@ class ApiService {
   }
 
   getRecordingStreamUrl(recordingId: number): string {
-    return `${API_BASE}/api/recordings/${recordingId}/stream`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/recordings/${recordingId}/stream${tokenParam}`;
   }
 
   getRecordingDownloadUrl(recordingId: number): string {
-    return `${API_BASE}/api/recordings/${recordingId}/download`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/recordings/${recordingId}/download${tokenParam}`;
   }
 
   getRecordingThumbnailUrl(recordingId: number): string {
-    return `${API_BASE}/api/recordings/${recordingId}/thumbnail`;
+    const tokenParam = this.token ? `?token=${encodeURIComponent(this.token)}` : '';
+    return `${API_BASE}/api/recordings/${recordingId}/thumbnail${tokenParam}`;
   }
 
   async deleteRecording(recordingId: number): Promise<{ message: string }> {

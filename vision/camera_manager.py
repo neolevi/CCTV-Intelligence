@@ -41,6 +41,7 @@ class CameraManager:
         self.is_monitoring: bool = False
         self.is_connected: bool = False
         self.camera_id: int = 1
+        self.user_id: Optional[int] = None
         self.camera_name: str = "Main Surveillance Camera"
         self.device_index: int = 0
         self.rtsp_url: Optional[str] = None
@@ -120,6 +121,7 @@ class CameraManager:
         camera_id: int = 1,
         device_index: int = 0,
         rtsp_url: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> bool:
         """Start live monitoring pipeline in a background thread."""
         with self._lock:
@@ -129,6 +131,7 @@ class CameraManager:
             self.camera_id = camera_id
             self.device_index = device_index
             self.rtsp_url = rtsp_url
+            self.user_id = user_id
             self.is_virtual_camera = False
 
             # Query camera info from DB
@@ -136,33 +139,56 @@ class CameraManager:
                 cam = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
                 if cam:
                     self.camera_name = cam.name
-                    cam.is_connected = True
-                    cam.status = "monitoring"
-                    db.commit()
 
-            # Attempt physical camera connection unless device_index is -1
+            # Hardware vs Virtual distinction (Physical cameras are strictly used without silent fallback)
             if device_index >= 0:
                 try:
                     self.cap = cv2.VideoCapture(device_index)
-                    if self.cap and self.cap.isOpened():
-                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.DEFAULT_FRAME_WIDTH)
-                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.DEFAULT_FRAME_HEIGHT)
-                        self.cap.set(cv2.CAP_PROP_FPS, settings.DEFAULT_CAMERA_FPS)
-                        self.is_connected = True
-                    else:
-                        self.is_virtual_camera = True
-                        self.is_connected = True
-                except Exception:
-                    self.is_virtual_camera = True
+                    if not self.cap or not self.cap.isOpened():
+                        if self.cap:
+                            self.cap.release()
+                            self.cap = None
+                        with SessionLocal() as db:
+                            cam = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
+                            if cam:
+                                cam.is_connected = False
+                                cam.status = "error"
+                                db.commit()
+                        raise RuntimeError(f"Physical camera device {device_index} cannot be opened. Hardware unavailable.")
+
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.DEFAULT_FRAME_WIDTH)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.DEFAULT_FRAME_HEIGHT)
+                    self.cap.set(cv2.CAP_PROP_FPS, settings.DEFAULT_CAMERA_FPS)
                     self.is_connected = True
+                    self.is_virtual_camera = False
+                except Exception as e:
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+                    with SessionLocal() as db:
+                        cam = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
+                        if cam:
+                            cam.is_connected = False
+                            cam.status = "error"
+                            db.commit()
+                    raise RuntimeError(f"Error connecting to physical camera device {device_index}: {e}")
             else:
+                # Explicit simulated sensor mode
                 self.is_virtual_camera = True
                 self.is_connected = True
+
+            with SessionLocal() as db:
+                cam = db.query(models.Camera).filter(models.Camera.id == camera_id).first()
+                if cam:
+                    cam.is_connected = True
+                    cam.status = "monitoring"
+                    db.commit()
 
             # Create new MonitoringSession in DB
             now_dt = datetime.datetime.now()
             with SessionLocal() as db:
                 session = models.MonitoringSession(
+                    user_id=self.user_id,
                     camera_id=self.camera_id,
                     start_time=now_dt,
                     status="active",
@@ -176,6 +202,7 @@ class CameraManager:
             self.recording_manager = RecordingManager(
                 camera_id=self.camera_id,
                 camera_name=self.camera_name,
+                user_id=self.user_id,
             )
             self.recording_manager.set_session_id(self.session_id)
 
@@ -207,11 +234,18 @@ class CameraManager:
                 return True
 
             self.stop_event.set()
-            if self.capture_thread and self.capture_thread.is_alive():
-                self.capture_thread.join(timeout=2.0)
+            thread = self.capture_thread
 
+        # Join capture thread OUTSIDE self._lock to prevent lock deadlock
+        if thread and thread.is_alive():
+            thread.join(timeout=3.0)
+
+        with self._lock:
             if self.cap:
-                self.cap.release()
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
                 self.cap = None
 
             if self.recording_manager:
@@ -294,83 +328,133 @@ class CameraManager:
 
         return frame
 
+    def _generate_disconnected_frame(self) -> np.ndarray:
+        """Render a high-contrast hardware signal lost warning frame."""
+        w, h = settings.DEFAULT_FRAME_WIDTH, settings.DEFAULT_FRAME_HEIGHT
+        frame = np.full((h, w, 3), (20, 20, 25), dtype=np.uint8)
+        cv2.rectangle(frame, (0, 0), (w, 50), (15, 15, 120), -1)
+        cv2.rectangle(frame, (0, h - 50), (w, h), (15, 15, 120), -1)
+        cv2.putText(frame, "CCTV HARDWARE WARNING", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 255), 2)
+        cv2.putText(frame, "PHYSICAL CAMERA SIGNAL LOST", (w // 2 - 180, h // 2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
+        cv2.putText(frame, "Verify USB cable or camera connection in settings.", (w // 2 - 210, h // 2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame, f"TIMESTAMP: {ts_str}", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
+        return frame
+
+    def get_standby_jpeg(self) -> bytes:
+        """Generate static standby image when monitoring is paused or inactive."""
+        w, h = settings.DEFAULT_FRAME_WIDTH, settings.DEFAULT_FRAME_HEIGHT
+        frame = np.full((h, w, 3), (15, 23, 42), dtype=np.uint8)
+        cv2.rectangle(frame, (20, 20), (w - 20, h - 20), (51, 65, 85), 2)
+        cv2.putText(frame, "CCTV INTELLIGENCE SURVEILLANCE", (w // 2 - 220, h // 2 - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (226, 232, 240), 2)
+        cv2.putText(frame, "[ STANDBY MODE - MONITORING INACTIVE ]", (w // 2 - 200, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (148, 163, 184), 2)
+        cv2.putText(frame, "Click 'Start Live Monitoring' on Dashboard to begin.", (w // 2 - 185, h // 2 + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (94, 234, 212), 1)
+        ret, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        return jpeg.tobytes() if ret else b""
+
     def _capture_loop(self) -> None:
         """Dedicated thread executing frame acquisition, motion analysis, and sampling."""
         fps_tracker_time = time.time()
         fps_frame_counter = 0
+        consecutive_read_failures = 0
 
-        while not self.stop_event.is_set():
-            loop_start = time.time()
-            dt = loop_start - self.last_loop_time
-            self.last_loop_time = loop_start
+        try:
+            while not self.stop_event.is_set():
+                loop_start = time.time()
+                dt = loop_start - self.last_loop_time
+                self.last_loop_time = loop_start
 
-            # 1. Acquire raw frame
-            if not self.is_virtual_camera and self.cap and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if not ret or frame is None:
-                    # Physical camera failed or disconnected; fall back to virtual feed
+                # 1. Acquire raw frame (strictly distinguish physical vs virtual sensor)
+                if not self.is_virtual_camera:
+                    if self.cap and self.cap.isOpened():
+                        ret, frame = self.cap.read()
+                        if not ret or frame is None:
+                            consecutive_read_failures += 1
+                            if consecutive_read_failures >= 10:
+                                self.is_connected = False
+                                frame = self._generate_disconnected_frame()
+                            else:
+                                time.sleep(0.03)
+                                continue
+                        else:
+                            consecutive_read_failures = 0
+                            self.is_connected = True
+                    else:
+                        self.is_connected = False
+                        frame = self._generate_disconnected_frame()
+                else:
                     frame = self._generate_virtual_frame()
-            else:
-                frame = self._generate_virtual_frame()
 
-            self.total_frames_processed += 1
-            fps_frame_counter += 1
+                self.total_frames_processed += 1
+                fps_frame_counter += 1
 
-            # Update FPS calculation every second
-            if loop_start - fps_tracker_time >= 1.0:
-                self.current_fps = round(fps_frame_counter / (loop_start - fps_tracker_time), 1)
-                fps_tracker_time = loop_start
-                fps_frame_counter = 0
+                # Update FPS calculation every second
+                if loop_start - fps_tracker_time >= 1.0:
+                    self.current_fps = round(fps_frame_counter / (loop_start - fps_tracker_time), 1)
+                    fps_tracker_time = loop_start
+                    fps_frame_counter = 0
 
-            # 2. Motion Detection Pipeline
-            activity_state, motion_score, is_motion, fg_mask = self.motion_detector.process_frame(frame)
+                # 2. Motion Detection Pipeline
+                activity_state, motion_score, is_motion, fg_mask = self.motion_detector.process_frame(frame)
 
-            # Update duration accumulation
-            if activity_state == "ACTIVE":
-                self.active_seconds += dt
-            elif activity_state == "DEEP_IDLE":
-                self.deep_idle_seconds += dt
-            else:  # IDLE
-                self.idle_seconds += dt
+                # Update duration accumulation
+                if activity_state == "ACTIVE":
+                    self.active_seconds += dt
+                elif activity_state == "DEEP_IDLE":
+                    self.deep_idle_seconds += dt
+                else:  # IDLE
+                    self.idle_seconds += dt
 
-            # 3. Adaptive Frame Sampling
-            is_sampled = self.adaptive_sampler.should_sample(activity_state, loop_start)
-            if is_sampled:
-                self.total_frames_saved += 1
+                # 3. Adaptive Frame Sampling
+                is_sampled = self.adaptive_sampler.should_sample(activity_state, loop_start)
+                if is_sampled:
+                    self.total_frames_saved += 1
 
-            # 4. Recording & Event Logging
-            if self.recording_manager:
-                self.recording_manager.handle_frame(
+                # 4. Recording & Event Logging
+                if self.recording_manager:
+                    self.recording_manager.handle_frame(
+                        frame=frame,
+                        activity_state=activity_state,
+                        motion_score=motion_score,
+                        is_sampled=is_sampled,
+                    )
+
+                # 5. Annotate Live HUD Frame for MJPEG Stream
+                hud_frame = FrameProcessor.add_overlay(
                     frame=frame,
+                    camera_name=self.camera_name,
                     activity_state=activity_state,
                     motion_score=motion_score,
-                    is_sampled=is_sampled,
+                    timestamp=datetime.datetime.now(),
                 )
 
-            # 5. Annotate Live HUD Frame for MJPEG Stream
-            hud_frame = FrameProcessor.add_overlay(
-                frame=frame,
-                camera_name=self.camera_name,
-                activity_state=activity_state,
-                motion_score=motion_score,
-                timestamp=datetime.datetime.now(),
-            )
+                # 6. Encode JPEG and store in memory buffer
+                ret, jpeg = cv2.imencode(
+                    ".jpg",
+                    hud_frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 75],
+                )
+                if ret:
+                    with self.frame_lock:
+                        self.latest_raw_frame = frame
+                        self.latest_jpeg_bytes = jpeg.tobytes()
 
-            # 6. Encode JPEG and store in memory buffer
-            ret, jpeg = cv2.imencode(
-                ".jpg",
-                hud_frame,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 75],
-            )
-            if ret:
-                with self.frame_lock:
-                    self.latest_raw_frame = frame
-                    self.latest_jpeg_bytes = jpeg.tobytes()
-
-            # Target ~25-30 FPS loop rate
-            elapsed = time.time() - loop_start
-            sleep_needed = max(0.005, (1.0 / 30.0) - elapsed)
-            time.sleep(sleep_needed)
+                # Target ~25-30 FPS loop rate
+                elapsed = time.time() - loop_start
+                sleep_needed = max(0.005, (1.0 / 30.0) - elapsed)
+                time.sleep(sleep_needed)
+        finally:
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
+            if self.recording_manager:
+                try:
+                    self.recording_manager.finalize()
+                except Exception:
+                    pass
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         """Retrieve the most recent encoded frame for live MJPEG streaming."""

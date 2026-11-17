@@ -1,5 +1,6 @@
 """Configuration settings for CCTV Intelligence."""
 import os
+import secrets
 from pathlib import Path
 from pydantic_settings import BaseSettings
 
@@ -16,9 +17,11 @@ class Settings(BaseSettings):
     FRONTEND_PORT: int = 5173
 
     # Security
-    SECRET_KEY: str = "cctv-intelligence-secret-dev-key-change-in-prod-xyz987654321"
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "cctv-intelligence-secret-dev-key-change-in-prod-xyz987654321")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@cctv.local")
+    ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "AdminPass123!")
 
     # Database
     DATABASE_URL: str = f"sqlite:///{PROJECT_ROOT / 'cctv_intelligence.db'}"
@@ -56,6 +59,20 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
+
+# Secure first-run secret key generation
+_dev_default = "cctv-intelligence-secret-dev-key-change-in-prod-xyz987654321"
+if settings.SECRET_KEY == _dev_default:
+    _new_secret = secrets.token_hex(32)
+    settings.SECRET_KEY = _new_secret
+    _env_file = PROJECT_ROOT / ".env"
+    if _env_file.exists():
+        try:
+            _txt = _env_file.read_text(encoding="utf-8")
+            if _dev_default in _txt:
+                _env_file.write_text(_txt.replace(_dev_default, _new_secret), encoding="utf-8")
+        except Exception:
+            pass
 
 # Ensure storage directories exist
 for directory in [

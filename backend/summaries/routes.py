@@ -1,5 +1,6 @@
 """Daily Surveillance Summary API routes."""
 import datetime
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
@@ -12,6 +13,20 @@ from backend.summaries.generator import DailySummaryGenerator
 router = APIRouter(prefix="/api/summaries", tags=["Daily Summaries"])
 
 
+def validate_date_param(date_str: Optional[str]) -> str:
+    """Validate that date_str is formatted as YYYY-MM-DD, or return today's date."""
+    if not date_str:
+        return datetime.datetime.now().strftime("%Y-%m-%d")
+    try:
+        parsed = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Expected YYYY-MM-DD",
+        )
+
+
 @router.get("/daily", response_model=schemas.DailySummaryOut)
 def get_daily_summary(
     date: Optional[str] = None,
@@ -19,12 +34,11 @@ def get_daily_summary(
     current_user: models.User = Depends(get_current_user),
 ):
     """Retrieve today's surveillance summary or for a specified date."""
-    if not date or not isinstance(date, str):
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
+    valid_date = validate_date_param(date)
 
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
-        date_str=date,
+        date_str=valid_date,
         force_regenerate=False,
     )
     return summary_data
@@ -37,9 +51,10 @@ def get_daily_summary_by_date(
     current_user: models.User = Depends(get_current_user),
 ):
     """Retrieve daily summary by specific date (YYYY-MM-DD)."""
+    valid_date = validate_date_param(date)
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
-        date_str=date,
+        date_str=valid_date,
         force_regenerate=False,
     )
     return summary_data
@@ -52,9 +67,10 @@ def generate_daily_summary(
     current_user: models.User = Depends(get_current_user),
 ):
     """Trigger on-demand recalculation and persistence of daily surveillance summary."""
+    valid_date = validate_date_param(date)
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
-        date_str=date,
+        date_str=valid_date,
         force_regenerate=True,
     )
     return summary_data
@@ -67,9 +83,10 @@ def download_summary_report(
     current_user: models.User = Depends(get_current_user),
 ):
     """Download comprehensive daily surveillance report in formatted Markdown text."""
+    valid_date = validate_date_param(date)
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
-        date_str=date,
+        date_str=valid_date,
         force_regenerate=False,
     )
 

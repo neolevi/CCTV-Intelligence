@@ -1,14 +1,14 @@
 """Camera management and live MJPEG streaming routes."""
 import time
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend import models, schemas
-from backend.auth.routes import get_current_user
+from backend.auth.routes import get_current_user, get_current_user_flexible
 from vision.camera_manager import camera_manager
 
 router = APIRouter(prefix="/api/camera", tags=["Camera Management"])
@@ -43,11 +43,19 @@ def start_camera(
     db: Session = Depends(get_db),
 ):
     """Start live surveillance monitoring pipeline."""
-    success = camera_manager.start_monitoring(
-        camera_id=req.camera_id or 1,
-        device_index=req.device_index if req.device_index is not None else 0,
-        rtsp_url=req.rtsp_url,
-    )
+    try:
+        success = camera_manager.start_monitoring(
+            camera_id=req.camera_id or 1,
+            device_index=req.device_index if req.device_index is not None else 0,
+            rtsp_url=req.rtsp_url,
+            user_id=current_user.id,
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -77,7 +85,7 @@ def trigger_simulated_motion(
 
 def _generate_mjpeg_stream():
     """Generator yielding multipart JPEG frames for live surveillance streaming."""
-    while True:
+    while camera_manager.is_monitoring:
         frame_bytes = camera_manager.get_latest_jpeg()
         if frame_bytes:
             yield (
@@ -88,11 +96,14 @@ def _generate_mjpeg_stream():
 
 
 @router.get("/stream")
-def stream_live_video():
-    """Stream live CCTV surveillance video via multipart/x-mixed-replace MJPEG."""
-    # If not already monitoring, auto-start in virtual mode so stream displays immediately
+def stream_live_video(
+    current_user: models.User = Depends(get_current_user_flexible),
+):
+    """Stream live CCTV surveillance video via multipart/x-mixed-replace MJPEG with authentication."""
+    # Prevent automatic virtual camera start. Return standby frame if inactive.
     if not camera_manager.is_monitoring:
-        camera_manager.start_monitoring(camera_id=1, device_index=-1)
+        standby_bytes = camera_manager.get_standby_jpeg()
+        return Response(content=standby_bytes, media_type="image/jpeg")
 
     return StreamingResponse(
         _generate_mjpeg_stream(),

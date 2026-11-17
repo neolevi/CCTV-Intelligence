@@ -2,12 +2,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import Optional
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.database import init_db
+from backend.auth.security import decode_access_token
 from backend.auth.routes import router as auth_router
 from backend.cameras.routes import router as camera_router
 from backend.motion.routes import router as motion_router
@@ -54,9 +55,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static file serving for storage (recordings, thumbnails, frames)
-app.mount("/storage", StaticFiles(directory=str(settings.STORAGE_DIR)), name="storage")
-
 # Include Modular Routers
 app.include_router(auth_router)
 app.include_router(camera_router)
@@ -81,8 +79,12 @@ def health_check():
 
 
 @app.websocket("/api/ws/telemetry")
-async def websocket_telemetry(websocket: WebSocket):
-    """Real-time WebSocket feed pushing camera & motion telemetry to frontend clients."""
+async def websocket_telemetry(websocket: WebSocket, token: Optional[str] = Query(None)):
+    """Real-time authenticated WebSocket feed pushing camera & motion telemetry."""
+    if not token or not decode_access_token(token):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     try:
         while True:

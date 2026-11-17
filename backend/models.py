@@ -28,6 +28,7 @@ class Camera(Base):
     __tablename__ = "cameras"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     device_index = Column(Integer, default=0)
     rtsp_url = Column(String(512), nullable=True)
@@ -40,6 +41,7 @@ class Camera(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     # Relationships
+    user = relationship("User", backref="cameras")
     sessions = relationship("MonitoringSession", back_populates="camera", cascade="all, delete-orphan")
     motion_events = relationship("MotionEvent", back_populates="camera", cascade="all, delete-orphan")
     frames = relationship("CapturedFrame", back_populates="camera", cascade="all, delete-orphan")
@@ -49,6 +51,7 @@ class MonitoringSession(Base):
     __tablename__ = "monitoring_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
     start_time = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     end_time = Column(DateTime, nullable=True)
@@ -59,6 +62,7 @@ class MonitoringSession(Base):
     status = Column(String(50), default="active")  # "active", "completed", "aborted"
 
     # Relationships
+    user = relationship("User", backref="monitoring_sessions")
     camera = relationship("Camera", back_populates="sessions")
     events = relationship("MotionEvent", back_populates="session", cascade="all, delete-orphan")
     frames = relationship("CapturedFrame", back_populates="session", cascade="all, delete-orphan")
@@ -68,6 +72,7 @@ class MotionEvent(Base):
     __tablename__ = "motion_events"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
     session_id = Column(Integer, ForeignKey("monitoring_sessions.id"), nullable=True, index=True)
     start_time = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
@@ -79,6 +84,7 @@ class MotionEvent(Base):
     description = Column(Text, nullable=True)
 
     # Relationships
+    user = relationship("User", backref="motion_events")
     camera = relationship("Camera", back_populates="motion_events")
     session = relationship("MonitoringSession", back_populates="events")
     frames = relationship("CapturedFrame", back_populates="event")
@@ -88,15 +94,18 @@ class CapturedFrame(Base):
     __tablename__ = "captured_frames"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
     session_id = Column(Integer, ForeignKey("monitoring_sessions.id"), nullable=True, index=True)
     event_id = Column(Integer, ForeignKey("motion_events.id"), nullable=True, index=True)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
     activity_state = Column(String(50), nullable=False)  # "ACTIVE", "IDLE", "DEEP_IDLE"
     file_path = Column(String(512), nullable=False)
+    file_size_bytes = Column(Integer, default=0)
     motion_score = Column(Float, default=0.0)
 
     # Relationships
+    user = relationship("User", backref="captured_frames")
     camera = relationship("Camera", back_populates="frames")
     session = relationship("MonitoringSession", back_populates="frames")
     event = relationship("MotionEvent", back_populates="frames")
@@ -105,6 +114,7 @@ class Recording(Base):
     __tablename__ = "recordings"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
     session_id = Column(Integer, ForeignKey("monitoring_sessions.id"), nullable=True, index=True)
     event_id = Column(Integer, ForeignKey("motion_events.id"), nullable=True, index=True)
@@ -117,6 +127,7 @@ class Recording(Base):
     activity_state = Column(String(50), default="ACTIVE")
 
     # Relationships
+    user = relationship("User", backref="recordings")
     camera = relationship("Camera", back_populates="recordings")
     session = relationship("MonitoringSession", back_populates="recordings")
     event = relationship("MotionEvent", back_populates="recordings")

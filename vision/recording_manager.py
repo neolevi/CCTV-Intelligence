@@ -18,9 +18,10 @@ class RecordingManager:
     and video file recording (using OpenCV VideoWriter).
     """
 
-    def __init__(self, camera_id: int, camera_name: str):
+    def __init__(self, camera_id: int, camera_name: str, user_id: Optional[int] = None):
         self.camera_id = camera_id
         self.camera_name = camera_name
+        self.user_id = user_id
 
         self.current_event_id: Optional[int] = None
         self.current_session_id: Optional[int] = None
@@ -30,9 +31,9 @@ class RecordingManager:
         self.peak_motion_score: float = 0.0
         self.event_frame_count: int = 0
         self.event_thumbnail_path: Optional[str] = None
-        self.frame_width: int = 640
-        self.frame_height: int = 480
-        self.recording_fps: float = 10.0
+        self.frame_width: int = settings.DEFAULT_FRAME_WIDTH
+        self.frame_height: int = settings.DEFAULT_FRAME_HEIGHT
+        self.recording_fps: float = float(settings.ACTIVE_SAMPLING_FPS)
 
     def set_session_id(self, session_id: Optional[int]) -> None:
         """Assign current active monitoring session ID."""
@@ -48,6 +49,7 @@ class RecordingManager:
         """
         Processes an incoming frame in real-time surveillance:
         - If state is ACTIVE, initiates or appends to a motion event & video recording.
+        - Frame is written to the video writer according to the adaptive sampling rate.
         - If state transitioned away from ACTIVE, finalizes the open recording event.
         - If is_sampled is True, saves the frame as an individual captured frame asset.
         """
@@ -61,8 +63,8 @@ class RecordingManager:
             else:
                 self.peak_motion_score = max(self.peak_motion_score, motion_score)
 
-            # Write frame to video recording
-            if self.video_writer is not None:
+            # Write frame to video recording according to the adaptive sampling rate
+            if is_sampled and self.video_writer is not None:
                 self.video_writer.write(frame)
                 self.event_frame_count += 1
 
@@ -99,6 +101,7 @@ class RecordingManager:
         # Create MotionEvent row in SQLite
         with SessionLocal() as db:
             event = models.MotionEvent(
+                user_id=self.user_id,
                 camera_id=self.camera_id,
                 session_id=self.current_session_id,
                 start_time=now_dt,
@@ -183,6 +186,7 @@ class RecordingManager:
             # Insert Recording record
             if self.current_video_path and self.current_video_path.exists():
                 recording = models.Recording(
+                    user_id=self.user_id,
                     camera_id=self.camera_id,
                     session_id=self.current_session_id,
                     event_id=self.current_event_id,
@@ -231,14 +235,23 @@ class RecordingManager:
         )
         FrameProcessor.save_frame(annotated, file_path)
 
+        file_size_bytes = 0
+        if file_path.exists():
+            try:
+                file_size_bytes = file_path.stat().st_size
+            except Exception:
+                pass
+
         with SessionLocal() as db:
             cf = models.CapturedFrame(
+                user_id=self.user_id,
                 camera_id=self.camera_id,
                 session_id=self.current_session_id,
                 event_id=self.current_event_id,
                 timestamp=now_dt,
                 activity_state=activity_state,
                 file_path=str(file_path),
+                file_size_bytes=file_size_bytes,
                 motion_score=motion_score,
             )
             db.add(cf)

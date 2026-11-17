@@ -39,23 +39,23 @@ class TokenData(BaseModel):
 
 # --- Camera Schemas ---
 class CameraBase(BaseModel):
-    name: str
-    device_index: int = 0
+    name: str = Field(..., min_length=1, max_length=100)
+    device_index: int = Field(0, ge=-1, le=32)
     rtsp_url: Optional[str] = None
-    resolution_width: int = 640
-    resolution_height: int = 480
-    fps: int = 30
+    resolution_width: int = Field(640, ge=160, le=3840)
+    resolution_height: int = Field(480, ge=120, le=2160)
+    fps: int = Field(30, ge=1, le=60)
 
 class CameraCreate(CameraBase):
     pass
 
 class CameraUpdate(BaseModel):
-    name: Optional[str] = None
-    device_index: Optional[int] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    device_index: Optional[int] = Field(None, ge=-1, le=32)
     rtsp_url: Optional[str] = None
-    resolution_width: Optional[int] = None
-    resolution_height: Optional[int] = None
-    fps: Optional[int] = None
+    resolution_width: Optional[int] = Field(None, ge=160, le=3840)
+    resolution_height: Optional[int] = Field(None, ge=120, le=2160)
+    fps: Optional[int] = Field(None, ge=1, le=60)
 
 class CameraOut(CameraBase):
     id: int
@@ -226,15 +226,15 @@ class SettingsOut(BaseModel):
     storage_free_bytes: int
 
 class SettingsUpdate(BaseModel):
-    motion_sensitivity: Optional[int] = None
-    motion_threshold_percent: Optional[float] = None
-    idle_timeout_seconds: Optional[float] = None
-    deep_idle_timeout_seconds: Optional[float] = None
-    active_sampling_fps: Optional[float] = None
-    idle_sampling_fps: Optional[float] = None
-    deep_idle_sampling_fps: Optional[float] = None
-    storage_retention_days: Optional[int] = None
-    theme: Optional[str] = None
-    default_camera_index: Optional[int] = None
-    resolution_width: Optional[int] = None
-    resolution_height: Optional[int] = None
+    motion_sensitivity: Optional[int] = Field(None, ge=1, le=100)
+    motion_threshold_percent: Optional[float] = Field(None, ge=0.01, le=100.0)
+    idle_timeout_seconds: Optional[float] = Field(None, ge=1.0, le=3600.0)
+    deep_idle_timeout_seconds: Optional[float] = Field(None, ge=2.0, le=86400.0)
+    active_sampling_fps: Optional[float] = Field(None, ge=0.1, le=60.0)
+    idle_sampling_fps: Optional[float] = Field(None, ge=0.1, le=30.0)
+    deep_idle_sampling_fps: Optional[float] = Field(None, ge=0.1, le=30.0)
+    storage_retention_days: Optional[int] = Field(None, ge=1, le=3650)
+    theme: Optional[str] = Field(None, pattern=r"^(dark|light)$")
+    default_camera_index: Optional[int] = Field(None, ge=-1, le=32)
+    resolution_width: Optional[int] = Field(None, ge=160, le=3840)
+    resolution_height: Optional[int] = Field(None, ge=120, le=2160)

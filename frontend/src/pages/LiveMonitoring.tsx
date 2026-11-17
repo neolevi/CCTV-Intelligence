@@ -119,11 +119,28 @@ export const LiveMonitoring: React.FC = () => {
         }}
       >
         <div style={{ width: '100%', minHeight: '520px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <img
-            src={api.getLiveStreamUrl()}
-            alt="Live Surveillance Video"
-            style={{ width: '100%', maxHeight: '720px', objectFit: 'contain', display: 'block' }}
-          />
+          {cameraStatus?.is_monitoring ? (
+            <img
+              src={api.getLiveStreamUrl()}
+              alt="Live Surveillance Video"
+              style={{ width: '100%', maxHeight: '720px', objectFit: 'contain', display: 'block' }}
+            />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+              <Video size={56} style={{ margin: '0 auto 1.25rem', opacity: 0.35 }} />
+              <h3 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem', fontWeight: 600 }}>Camera Stream Inactive</h3>
+              <p style={{ fontSize: '0.95rem', marginBottom: '1.5rem', maxWidth: '420px', margin: '0 auto 1.5rem' }}>
+                Live camera monitoring is currently paused. Select a device above and click start to initiate live surveillance.
+              </p>
+              <button
+                className="btn btn-primary"
+                onClick={handleStart}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0 auto' }}
+              >
+                <Play size={16} /> Start Live Monitoring
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Real-time Telemetry Overlay Bar */}
