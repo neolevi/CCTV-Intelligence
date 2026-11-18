@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.database import init_db
+from backend.database import init_db, SessionLocal
 from backend.auth.security import decode_access_token
 from backend.auth.routes import router as auth_router
 from backend.cameras.routes import router as camera_router
@@ -79,9 +79,19 @@ def health_check():
 @app.websocket("/api/ws/telemetry")
 async def websocket_telemetry(websocket: WebSocket, token: Optional[str] = Query(None)):
     """Real-time authenticated WebSocket feed pushing camera & motion telemetry."""
-    if not token or not decode_access_token(token):
+    payload = decode_access_token(token) if token else None
+    if not payload or not payload.get("sub"):
         await websocket.close(code=1008)
         return
+
+    with SessionLocal() as db:
+        try:
+            user = db.query(models.User).filter(models.User.id == int(payload["sub"])).first()
+        except Exception:
+            user = None
+        if not user or not user.is_active:
+            await websocket.close(code=1008)
+            return
 
     await websocket.accept()
     try:

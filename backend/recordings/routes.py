@@ -26,9 +26,9 @@ def list_recordings(
     """List available surveillance video recordings scoped to user authorization."""
     query = db.query(models.Recording)
 
-    # User authorization: non-admins only see recordings they own or default system recordings
+    # User authorization: non-admins strictly see recordings they own
     if current_user.role != "admin":
-        query = query.filter((models.Recording.user_id == current_user.id) | (models.Recording.user_id == None))
+        query = query.filter(models.Recording.user_id == current_user.id)
 
     if date:
         try:
@@ -148,22 +148,29 @@ def delete_recording(
     if current_user.role != "admin" and rec.user_id and rec.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this recording")
 
-    # Remove video file
-    try:
+    # Remove video file if present
+    if rec.file_path:
         p = Path(rec.file_path)
         if p.exists():
-            p.unlink()
-    except Exception:
-        pass
+            try:
+                p.unlink()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to delete recording file from disk: {e}",
+                )
 
-    # Remove thumbnail
+    # Remove thumbnail if present
     if rec.thumbnail_path:
-        try:
-            tp = Path(rec.thumbnail_path)
-            if tp.exists():
+        tp = Path(rec.thumbnail_path)
+        if tp.exists():
+            try:
                 tp.unlink()
-        except Exception:
-            pass
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to delete recording thumbnail from disk: {e}",
+                )
 
     db.delete(rec)
     db.commit()

@@ -25,13 +25,17 @@ class TriggerMotionRequest(BaseModel):
 
 
 @router.get("/devices", response_model=List[schemas.CameraDeviceOption])
-def get_camera_devices():
+def get_camera_devices(
+    current_user: models.User = Depends(get_current_user),
+):
     """Enumerate hardware webcam devices and virtual surveillance cameras."""
     return camera_manager.list_devices()
 
 
 @router.get("/status", response_model=schemas.CameraStatusOut)
-def get_camera_status():
+def get_camera_status(
+    current_user: models.User = Depends(get_current_user),
+):
     """Retrieve real-time camera connection and monitoring status."""
     return camera_manager.get_status()
 
@@ -43,9 +47,31 @@ def start_camera(
     db: Session = Depends(get_db),
 ):
     """Start live surveillance monitoring pipeline."""
+    # 1. Resolve requested camera and verify ownership
+    cam_id = req.camera_id or 1
+    cam = db.query(models.Camera).filter(models.Camera.id == cam_id).first()
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Camera #{cam_id} not found.",
+        )
+
+    if current_user.role != "admin" and cam.user_id is not None and cam.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to operate this camera.",
+        )
+
+    # 2. Check if a monitoring session is already active (resolve multi-user / singleton concurrency)
+    if camera_manager.is_monitoring:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A camera monitoring session is already active (Camera #{camera_manager.camera_id}). Please stop it before starting another.",
+        )
+
     try:
         success = camera_manager.start_monitoring(
-            camera_id=req.camera_id or 1,
+            camera_id=cam_id,
             device_index=req.device_index if req.device_index is not None else 0,
             rtsp_url=req.rtsp_url,
             user_id=current_user.id,
@@ -69,7 +95,24 @@ def stop_camera(
     current_user: models.User = Depends(get_current_user),
 ):
     """Stop surveillance monitoring and release hardware camera resources."""
-    camera_manager.stop_monitoring()
+    # Prevent stopping another user's session
+    if camera_manager.is_monitoring:
+        if (
+            camera_manager.user_id is not None
+            and current_user.role != "admin"
+            and camera_manager.user_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Cannot stop another operator's active monitoring session.",
+            )
+
+    stopped = camera_manager.stop_monitoring()
+    if not stopped:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Camera monitoring thread did not terminate cleanly.",
+        )
     return {"message": "Camera monitoring stopped.", "status": camera_manager.get_status()}
 
 
@@ -104,6 +147,17 @@ def stream_live_video(
     if not camera_manager.is_monitoring:
         standby_bytes = camera_manager.get_standby_jpeg()
         return Response(content=standby_bytes, media_type="image/jpeg")
+
+    # Prevent access to another user's live stream
+    if (
+        camera_manager.user_id is not None
+        and current_user.role != "admin"
+        and camera_manager.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to view another operator's live camera stream.",
+        )
 
     return StreamingResponse(
         _generate_mjpeg_stream(),

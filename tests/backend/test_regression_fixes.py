@@ -2,6 +2,7 @@
 Comprehensive Regression Tests for CCTV Intelligence Bug Fixes & Code Quality Enhancements.
 Verifies all 18 priority fixes and security hardening.
 """
+import asyncio
 import datetime
 import os
 from pathlib import Path
@@ -228,12 +229,14 @@ def test_fix_7_camera_thread_shutdown_cleanly(admin_user, db):
     assert start_res["status"]["is_monitoring"] is True
     assert camera_manager.capture_thread is not None
     assert camera_manager.capture_thread.is_alive() is True
+    thread = camera_manager.capture_thread
 
     # Stop monitoring
     stop_res = stop_camera(current_user=admin_user)
     assert stop_res["status"]["is_monitoring"] is False
     assert camera_manager.cap is None
-    assert camera_manager.capture_thread.is_alive() is False
+    assert thread.is_alive() is False
+    assert camera_manager.capture_thread is None
 
 
 # ---------------------------------------------------------------------------
@@ -261,23 +264,33 @@ def test_fix_10_daily_summary_timeline_classifies_four_states():
         end_time=datetime.datetime(2026, 5, 1, 12, 0, 0),
         status="completed",
     )
-    # Event at 08:15 (ACTIVE)
+    # Event at 08:10-08:15 (5 minutes of sustained ACTIVE motion > 120s)
     e1 = models.MotionEvent(
         id=201,
         camera_id=1,
-        start_time=datetime.datetime(2026, 5, 1, 8, 15, 0),
-        end_time=datetime.datetime(2026, 5, 1, 8, 16, 0),
+        start_time=datetime.datetime(2026, 5, 1, 8, 10, 0),
+        end_time=datetime.datetime(2026, 5, 1, 8, 15, 0),
+        activity_state="ACTIVE",
+    )
+    # Brief event at 08:45-08:45:20 (20s motion, should classify window as IDLE with event)
+    e2 = models.MotionEvent(
+        id=202,
+        camera_id=1,
+        start_time=datetime.datetime(2026, 5, 1, 8, 45, 0),
+        end_time=datetime.datetime(2026, 5, 1, 8, 45, 20),
         activity_state="ACTIVE",
     )
 
     segments = DailySummaryGenerator._build_timeline_segments(
-        start_dt, end_dt, [s1], [e1]
+        start_dt, end_dt, [s1], [e1, e2]
     )
     states = {seg["activity_state"] for seg in segments}
     # OFFLINE before 08:00 and after 12:00
     assert "OFFLINE" in states
-    # ACTIVE at 08:00-08:30
+    # ACTIVE at 08:00-08:30 (due to 5 mins sustained motion)
     assert "ACTIVE" in states
+    # IDLE at 08:30-09:00 (brief 20s event does not mark entire 30m window ACTIVE)
+    assert "IDLE" in states
     # DEEP_IDLE after extended quiet (e.g. 10:00-10:30)
     assert "DEEP_IDLE" in states
 
@@ -367,6 +380,14 @@ def test_fix_13_midnight_crossing_session_clamping(db):
     # Session from 23:30 on Day 1 to 00:30 on Day 2 (60 min total, 30 min on Day 1)
     day1_str = "2026-08-10"
     day1_date = datetime.datetime.strptime(day1_str, "%Y-%m-%d")
+    # Clean up any conflicting sessions or summaries on day1
+    db.query(models.DailySummary).filter(models.DailySummary.date == day1_str).delete(synchronize_session=False)
+    db.query(models.MonitoringSession).filter(
+        models.MonitoringSession.start_time >= day1_date,
+        models.MonitoringSession.start_time < day1_date + datetime.timedelta(days=1),
+    ).delete(synchronize_session=False)
+    db.commit()
+
     s = models.MonitoringSession(
         camera_id=1,
         start_time=day1_date + datetime.timedelta(hours=23, minutes=30),
@@ -465,4 +486,332 @@ def test_monotonic_clock_robustness():
     status = detector.get_status()
     assert "time_in_current_state" in status
     assert status["time_in_current_state"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Second-Pass Item 2: Camera Ownership, Cross-User Rejection & Multi-User 409 Conflict
+# ---------------------------------------------------------------------------
+def test_camera_ownership_and_cross_user_rejection(db, admin_user):
+    """Verify camera ownership checks, multi-user singleton rejection, and stream protections."""
+    # Create Operator A and Operator B
+    user_a = db.query(models.User).filter(models.User.email == "op_a_test@cctv.local").first()
+    if not user_a:
+        user_a = models.User(
+            email="op_a_test@cctv.local",
+            full_name="Operator A",
+            hashed_password=get_password_hash("Pass123!"),
+            role="operator",
+            is_active=True,
+        )
+        db.add(user_a)
+        db.commit()
+        db.refresh(user_a)
+
+    user_b = db.query(models.User).filter(models.User.email == "op_b_test@cctv.local").first()
+    if not user_b:
+        user_b = models.User(
+            email="op_b_test@cctv.local",
+            full_name="Operator B",
+            hashed_password=get_password_hash("Pass123!"),
+            role="operator",
+            is_active=True,
+        )
+        db.add(user_b)
+        db.commit()
+        db.refresh(user_b)
+
+    # User A owns Camera A
+    cam_a = db.query(models.Camera).filter(models.Camera.name == "Camera A Test").first()
+    if not cam_a:
+        cam_a = models.Camera(
+            user_id=user_a.id,
+            name="Camera A Test",
+            device_index=-1,
+            resolution_width=640,
+            resolution_height=480,
+            fps=30,
+        )
+        db.add(cam_a)
+        db.commit()
+        db.refresh(cam_a)
+
+    # User B owns Camera B
+    cam_b = db.query(models.Camera).filter(models.Camera.name == "Camera B Test").first()
+    if not cam_b:
+        cam_b = models.Camera(
+            user_id=user_b.id,
+            name="Camera B Test",
+            device_index=-1,
+            resolution_width=640,
+            resolution_height=480,
+            fps=30,
+        )
+        db.add(cam_b)
+        db.commit()
+        db.refresh(cam_b)
+
+    # 1. User B tries to start User A's camera -> 403 Forbidden
+    req_a = StartMonitoringRequest(camera_id=cam_a.id, device_index=-1)
+    with pytest.raises(HTTPException) as exc:
+        start_camera(req_a, current_user=user_b, db=db)
+    assert exc.value.status_code == 403
+
+    # 2. User A starts their own camera -> 200 OK
+    res_start = start_camera(req_a, current_user=user_a, db=db)
+    assert res_start["status"]["is_monitoring"] is True
+
+    # 3. User B tries to start Camera B while Camera A is already active -> 409 Conflict
+    req_b = StartMonitoringRequest(camera_id=cam_b.id, device_index=-1)
+    with pytest.raises(HTTPException) as exc:
+        start_camera(req_b, current_user=user_b, db=db)
+    assert exc.value.status_code == 409
+    assert "A camera monitoring session is already active" in exc.value.detail
+
+    # 4. User B tries to stop User A's active session -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc:
+        stop_camera(current_user=user_b)
+    assert exc.value.status_code == 403
+    assert "Cannot stop another operator's active monitoring session" in exc.value.detail
+
+    # 5. User B tries to access User A's live stream -> 403 Forbidden
+    with pytest.raises(HTTPException) as exc:
+        stream_live_video(current_user=user_b)
+    assert exc.value.status_code == 403
+    assert "live camera stream" in exc.value.detail
+
+    # 6. User A stops their own camera -> 200 OK
+    res_stop = stop_camera(current_user=user_a)
+    assert res_stop["status"]["is_monitoring"] is False
+
+
+# ---------------------------------------------------------------------------
+# Second-Pass Item 3: Daily Summary Isolation & User-Scoped Queries
+# ---------------------------------------------------------------------------
+def test_daily_summary_user_isolation(db):
+    """Ensure Daily Summary only aggregates data belonging to the requested user."""
+    # User 1 & User 2
+    u1 = db.query(models.User).filter(models.User.email == "iso1@cctv.local").first()
+    if not u1:
+        u1 = models.User(email="iso1@cctv.local", hashed_password="pw", role="operator")
+        db.add(u1)
+        db.commit()
+        db.refresh(u1)
+
+    u2 = db.query(models.User).filter(models.User.email == "iso2@cctv.local").first()
+    if not u2:
+        u2 = models.User(email="iso2@cctv.local", hashed_password="pw", role="operator")
+        db.add(u2)
+        db.commit()
+        db.refresh(u2)
+
+    test_date_str = "2026-12-15"
+    db.query(models.DailySummary).filter(models.DailySummary.date == test_date_str).delete()
+    db.query(models.MotionEvent).filter(models.MotionEvent.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
+    db.query(models.MonitoringSession).filter(models.MonitoringSession.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
+    db.commit()
+
+    t_start = datetime.datetime(2026, 12, 15, 10, 0, 0)
+    t_end = datetime.datetime(2026, 12, 15, 11, 0, 0)
+
+    # Session for U1
+    s1 = models.MonitoringSession(
+        user_id=u1.id,
+        camera_id=1,
+        start_time=t_start,
+        end_time=t_end,
+        active_duration_seconds=300.0,
+        idle_duration_seconds=3300.0,
+        status="completed",
+    )
+    # Session for U2
+    s2 = models.MonitoringSession(
+        user_id=u2.id,
+        camera_id=1,
+        start_time=t_start,
+        end_time=t_end,
+        active_duration_seconds=600.0,
+        idle_duration_seconds=3000.0,
+        status="completed",
+    )
+    db.add_all([s1, s2])
+    db.commit()
+
+    # Event for U1
+    ev1 = models.MotionEvent(
+        user_id=u1.id,
+        camera_id=1,
+        session_id=s1.id,
+        start_time=t_start,
+        end_time=t_start + datetime.timedelta(seconds=60),
+        activity_state="ACTIVE",
+    )
+    # Event for U2
+    ev2 = models.MotionEvent(
+        user_id=u2.id,
+        camera_id=1,
+        session_id=s2.id,
+        start_time=t_start,
+        end_time=t_start + datetime.timedelta(seconds=120),
+        activity_state="ACTIVE",
+    )
+    db.add_all([ev1, ev2])
+    db.commit()
+
+    # Generate summary for U1
+    sum1 = DailySummaryGenerator.get_or_generate_summary(db=db, date_str=test_date_str, user_id=u1.id, force_regenerate=True)
+    # Generate summary for U2
+    sum2 = DailySummaryGenerator.get_or_generate_summary(db=db, date_str=test_date_str, user_id=u2.id, force_regenerate=True)
+
+    # Assert isolation
+    assert sum1["total_motion_events"] == 1
+    assert sum2["total_motion_events"] == 1
+    assert sum1["active_seconds"] == 300.0
+    assert sum2["active_seconds"] == 600.0
+
+    # User 1 route query must not return User 2's event
+    events_u1 = list_events(date=test_date_str, db=db, current_user=u1)
+    assert len(events_u1) == 1
+    assert events_u1[0].id == ev1.id
+
+    # Cleanup
+    db.query(models.DailySummary).filter(models.DailySummary.date == test_date_str).delete()
+    db.query(models.MotionEvent).filter(models.MotionEvent.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
+    db.query(models.MonitoringSession).filter(models.MonitoringSession.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Second-Pass Item 6: Recording Frame Count 1:1 & No Duplicate Initial Frame
+# ---------------------------------------------------------------------------
+def test_recording_manager_exact_frame_count_and_finalization():
+    """Verify that initial frame is not double-written and finalize() is safe/idempotent."""
+    import numpy as np
+
+    rm = RecordingManager(camera_id=1, camera_name="TestCam", user_id=1)
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Start event by passing ACTIVE state with is_sampled=True
+    rm.handle_frame(dummy_frame, activity_state="ACTIVE", motion_score=15.0, is_sampled=True)
+    assert rm.is_recording is True
+    assert rm.event_frame_count == 1  # Exactly 1 frame written!
+
+    # Second sampled frame
+    rm.handle_frame(dummy_frame, activity_state="ACTIVE", motion_score=12.0, is_sampled=True)
+    assert rm.event_frame_count == 2
+
+    # Unsampled frame during active event (e.g. rate-limited)
+    rm.handle_frame(dummy_frame, activity_state="ACTIVE", motion_score=10.0, is_sampled=False)
+    assert rm.event_frame_count == 2  # Still 2, not written!
+
+    # Finalize should close safely and be idempotent
+    rm.finalize()
+    assert rm.is_recording is False
+    # Second finalize call should not fail
+    rm.finalize()
+
+
+# ---------------------------------------------------------------------------
+# Second-Pass Item 9: File Deletion Failure Preserves Database Record
+# ---------------------------------------------------------------------------
+def test_file_deletion_failure_preserves_db_record(db, admin_user, monkeypatch):
+    """Ensure database records are NOT deleted if filesystem deletion fails with OSError."""
+    # Create a dummy recording record
+    rec = models.Recording(
+        camera_id=1,
+        user_id=admin_user.id,
+        file_path="C:/nonexistent/test_video.mp4",
+        file_size_bytes=1024,
+        duration_seconds=10.0,
+        start_time=datetime.datetime.now(),
+        end_time=datetime.datetime.now(),
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    rec_id = rec.id
+
+    # 1. File exists on disk but unlink raises OSError
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+    def mock_unlink(self, missing_ok=False):
+        raise OSError("Permission denied: simulated file system lock")
+
+    monkeypatch.setattr(Path, "unlink", mock_unlink)
+
+    # Attempt delete_recording with simulated disk error -> must raise 500
+    with pytest.raises(HTTPException) as exc:
+        delete_recording(rec_id, db=db, current_user=admin_user)
+    assert exc.value.status_code == 500
+    assert "Failed to delete" in exc.value.detail
+
+    # Verify database record still exists (NOT deleted!)
+    db_rec = db.query(models.Recording).filter(models.Recording.id == rec_id).first()
+    assert db_rec is not None
+    assert db_rec.id == rec_id
+
+    # 2. File is missing on disk -> cleanup succeeds without error
+    monkeypatch.undo()
+    res = delete_recording(rec_id, db=db, current_user=admin_user)
+    assert res["message"] == "Recording deleted successfully"
+
+    # Verify database record was deleted
+    assert db.query(models.Recording).filter(models.Recording.id == rec_id).first() is None
+
+
+# ---------------------------------------------------------------------------
+# Second-Pass Item 10: WebSocket Telemetry Inactive/Invalid User Rejection
+# ---------------------------------------------------------------------------
+def test_websocket_rejects_inactive_or_invalid_user():
+    """Verify WebSocket telemetry rejects inactive users or invalid tokens."""
+    from backend.main import websocket_telemetry
+
+    class AwaitableClose:
+        def __await__(self):
+            return iter([])
+
+    class DummyWebSocket:
+        def __init__(self):
+            self.closed_code = None
+            self.closed = False
+
+        def close(self, code=1000):
+            self.closed = True
+            self.closed_code = code
+            return AwaitableClose()
+
+    # 1. Invalid token rejection
+    ws1 = DummyWebSocket()
+    coro1 = websocket_telemetry(ws1, token="invalid-token")
+    try:
+        coro1.send(None)
+    except StopIteration:
+        pass
+    assert ws1.closed is True
+    assert ws1.closed_code == 1008
+
+    # 2. Inactive user token rejection
+    with SessionLocal() as session:
+        inactive_user = session.query(models.User).filter(models.User.email == "inactive_ws_test@cctv.local").first()
+        if not inactive_user:
+            inactive_user = models.User(
+                email="inactive_ws_test@cctv.local",
+                hashed_password="pw",
+                role="operator",
+                is_active=False,
+            )
+            session.add(inactive_user)
+        else:
+            inactive_user.is_active = False
+        session.commit()
+        session.refresh(inactive_user)
+        uid = inactive_user.id
+
+    inactive_token = create_access_token(subject=uid)
+    ws2 = DummyWebSocket()
+    coro2 = websocket_telemetry(ws2, token=inactive_token)
+    try:
+        coro2.send(None)
+    except StopIteration:
+        pass
+    assert ws2.closed is True
+    assert ws2.closed_code == 1008
 

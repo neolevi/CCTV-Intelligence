@@ -9,6 +9,7 @@ import {
   MotionEventDetail,
   Recording,
   DailySummary,
+  DailySummaryDateItem,
   AnalyticsOverview,
   AnalyticsTrends,
   SystemSettings,
@@ -238,6 +239,10 @@ class ApiService {
   }
 
   // --- Daily Summary APIs ---
+  async getAvailableSummaryDates(): Promise<DailySummaryDateItem[]> {
+    return this.request<DailySummaryDateItem[]>('/api/summaries/dates');
+  }
+
   async getDailySummary(date?: string): Promise<DailySummary> {
     const endpoint = date ? `/api/summaries/daily?date=${date}` : '/api/summaries/daily';
     return this.request<DailySummary>(endpoint);

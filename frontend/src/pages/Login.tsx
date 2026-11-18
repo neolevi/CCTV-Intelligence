@@ -8,8 +8,8 @@ interface LoginProps {
 
 export const Login: React.FC<LoginProps> = ({ onSwitchToRegister }) => {
   const { login } = useAuth();
-  const [email, setEmail] = useState('admin@cctv.local');
-  const [password, setPassword] = useState('AdminPass123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,11 +26,6 @@ export const Login: React.FC<LoginProps> = ({ onSwitchToRegister }) => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleUseDemo = () => {
-    setEmail('admin@cctv.local');
-    setPassword('AdminPass123!');
   };
 
   return (
@@ -170,15 +165,6 @@ export const Login: React.FC<LoginProps> = ({ onSwitchToRegister }) => {
         </form>
 
         <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.75rem', textAlign: 'center' }}>
-          <button
-            type="button"
-            onClick={handleUseDemo}
-            className="btn btn-secondary btn-sm"
-            style={{ width: '100%' }}
-          >
-            Auto-fill Default Admin Credentials
-          </button>
-
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
             Need an account?{' '}
             <button

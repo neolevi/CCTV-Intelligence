@@ -52,17 +52,32 @@ def test_user_registration_and_duplicate_prevention():
             email=test_email,
             password="SecurePassword123!",
             full_name="Test Officer",
-            role="operator",
         )
         res = register(user_in, db)
         assert res["access_token"] is not None
         assert res["user"].email == test_email
+        assert res["user"].role == "operator"
 
         # Duplicate attempt raises HTTPException 400
         with pytest.raises(HTTPException) as exc_info:
             register(user_in, db)
         assert exc_info.value.status_code == 400
         assert "already exists" in exc_info.value.detail.lower()
+
+
+def test_registration_privilege_escalation_prevented():
+    """Verify that public registration does not allow self-promotion to admin."""
+    with SessionLocal() as db:
+        test_email = f"hacker_attempt_{id(db)}@cctv.local"
+        # UserCreate schema has no role field; even if submitted, role must remain operator
+        user_in = schemas.UserCreate(
+            email=test_email,
+            password="HackerPassword123!",
+            full_name="Privilege Escalation Tester",
+        )
+        res = register(user_in, db)
+        assert res["user"].role == "operator"
+        assert res["user"].role != "admin"
 
 
 def test_get_me():

@@ -131,6 +131,16 @@ export interface DailySummary {
   timeline_segments: TimelineSegment[];
   hourly_distribution: HourlyActivity[];
   important_events: MotionEvent[];
+  events?: MotionEvent[];
+}
+
+export interface DailySummaryDateItem {
+  date: string;
+  total_events: number;
+  active_seconds: number;
+  total_monitoring_seconds: number;
+  storage_consumed_bytes: number;
+  has_summary: boolean;
 }
 
 export interface AnalyticsOverview {

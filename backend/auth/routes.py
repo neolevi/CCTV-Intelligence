@@ -129,7 +129,7 @@ def register(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
         email=user_in.email.lower(),
         full_name=user_in.full_name or user_in.email.split("@")[0],
         hashed_password=get_password_hash(user_in.password),
-        role=user_in.role or "operator",
+        role="operator",
         is_active=True,
     )
     db.add(new_user)

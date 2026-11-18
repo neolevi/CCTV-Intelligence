@@ -92,13 +92,14 @@ class CameraManager:
     def list_devices(self) -> List[Dict[str, Any]]:
         """Probe available camera devices on the system."""
         devices = []
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
         # Check standard physical indices 0, 1 safely
         for idx in range(2):
+            cap = None
             try:
-                cap = cv2.VideoCapture(idx)
-                if cap and cap.isOpened():
+                cap = cv2.VideoCapture(idx, backend)
+                if cap is not None and cap.isOpened():
                     ret, _ = cap.read()
-                    cap.release()
                     if ret:
                         devices.append({
                             "index": idx,
@@ -107,6 +108,12 @@ class CameraManager:
                         })
             except Exception:
                 pass
+            finally:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
 
         # Always include virtual surveillance simulation device for testing & environments without webcams
         devices.append({
@@ -126,7 +133,7 @@ class CameraManager:
         """Start live monitoring pipeline in a background thread."""
         with self._lock:
             if self.is_monitoring:
-                return True
+                raise RuntimeError("Another camera monitoring session is already active. Please stop it before starting a new one.")
 
             self.camera_id = camera_id
             self.device_index = device_index
@@ -208,8 +215,8 @@ class CameraManager:
 
             # Reset telemetry
             self.stop_event.clear()
-            self.start_monitoring_time = time.time()
-            self.last_loop_time = time.time()
+            self.start_monitoring_time = time.monotonic()
+            self.last_loop_time = time.monotonic()
             self.total_frames_processed = 0
             self.total_frames_saved = 0
             self.active_seconds = 0.0
@@ -240,6 +247,20 @@ class CameraManager:
         if thread and thread.is_alive():
             thread.join(timeout=3.0)
 
+        # Handle blocked physical camera reads safely if thread hasn't finished
+        if thread and thread.is_alive():
+            with self._lock:
+                if self.cap:
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
+                    self.cap = None
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                # Capture thread is still active; do NOT report as stopped
+                return False
+
         with self._lock:
             if self.cap:
                 try:
@@ -250,9 +271,11 @@ class CameraManager:
 
             if self.recording_manager:
                 self.recording_manager.finalize()
+                self.recording_manager = None
 
             self.is_monitoring = False
             self.is_connected = False
+            self.capture_thread = None
 
             # Update MonitoringSession and Camera in DB
             now_dt = datetime.datetime.now()
@@ -265,9 +288,9 @@ class CameraManager:
                         session.end_time = now_dt
                         session.status = "completed"
                         session.total_frames = self.total_frames_processed
-                        session.active_duration_seconds = round(self.active_seconds, 2)
-                        session.idle_duration_seconds = round(self.idle_seconds, 2)
-                        session.deep_idle_duration_seconds = round(self.deep_idle_seconds, 2)
+                        session.active_duration_seconds = max(0.0, round(self.active_seconds, 2))
+                        session.idle_duration_seconds = max(0.0, round(self.idle_seconds, 2))
+                        session.deep_idle_duration_seconds = max(0.0, round(self.deep_idle_seconds, 2))
 
                 cam = db.query(models.Camera).filter(models.Camera.id == self.camera_id).first()
                 if cam:
@@ -357,11 +380,12 @@ class CameraManager:
         fps_tracker_time = time.monotonic()
         fps_frame_counter = 0
         consecutive_read_failures = 0
+        self.last_loop_time = time.monotonic()
 
         try:
             while not self.stop_event.is_set():
                 loop_start = time.monotonic()
-                dt = loop_start - self.last_loop_time
+                dt = max(0.0, loop_start - self.last_loop_time)
                 self.last_loop_time = loop_start
 
                 # 1. Acquire raw frame (strictly distinguish physical vs virtual sensor)
@@ -399,11 +423,11 @@ class CameraManager:
 
                 # Update duration accumulation
                 if activity_state == "ACTIVE":
-                    self.active_seconds += dt
+                    self.active_seconds = max(0.0, self.active_seconds + dt)
                 elif activity_state == "DEEP_IDLE":
-                    self.deep_idle_seconds += dt
+                    self.deep_idle_seconds = max(0.0, self.deep_idle_seconds + dt)
                 else:  # IDLE
-                    self.idle_seconds += dt
+                    self.idle_seconds = max(0.0, self.idle_seconds + dt)
 
                 # 3. Adaptive Frame Sampling
                 is_sampled = self.adaptive_sampler.should_sample(activity_state, loop_start)
@@ -463,8 +487,8 @@ class CameraManager:
 
     def get_status(self) -> Dict[str, Any]:
         """Aggregate comprehensive camera, motion, and sampling status."""
-        now = time.time()
-        uptime = (now - self.start_monitoring_time) if (self.is_monitoring and self.start_monitoring_time) else 0.0
+        now = time.monotonic()
+        uptime = max(0.0, now - self.start_monitoring_time) if (self.is_monitoring and self.start_monitoring_time) else 0.0
 
         motion_info = self.motion_detector.get_status()
         sampling_info = self.adaptive_sampler.get_status()
@@ -484,9 +508,9 @@ class CameraManager:
             "total_frames_saved": self.total_frames_saved,
             "motion_score": motion_info["motion_score"],
             "is_motion_detected": motion_info["is_motion_detected"],
-            "active_seconds": round(self.active_seconds, 1),
-            "idle_seconds": round(self.idle_seconds, 1),
-            "deep_idle_seconds": round(self.deep_idle_seconds, 1),
+            "active_seconds": max(0.0, round(self.active_seconds, 1)),
+            "idle_seconds": max(0.0, round(self.idle_seconds, 1)),
+            "deep_idle_seconds": max(0.0, round(self.deep_idle_seconds, 1)),
         }
 
 

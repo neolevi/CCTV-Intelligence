@@ -2,6 +2,7 @@
 import os
 import secrets
 from pathlib import Path
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -17,11 +18,11 @@ class Settings(BaseSettings):
     FRONTEND_PORT: int = 5173
 
     # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "cctv-intelligence-secret-dev-key-change-in-prod-xyz987654321")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@cctv.local")
-    ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "AdminPass123!")
+    ADMIN_PASSWORD: Optional[str] = os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_DEFAULT_PASSWORD")
     CORS_ORIGINS: str = os.getenv(
         "CORS_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
@@ -64,19 +65,9 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Secure first-run secret key generation
-_dev_default = "cctv-intelligence-secret-dev-key-change-in-prod-xyz987654321"
-if settings.SECRET_KEY == _dev_default:
-    _new_secret = secrets.token_hex(32)
-    settings.SECRET_KEY = _new_secret
-    _env_file = PROJECT_ROOT / ".env"
-    if _env_file.exists():
-        try:
-            _txt = _env_file.read_text(encoding="utf-8")
-            if _dev_default in _txt:
-                _env_file.write_text(_txt.replace(_dev_default, _new_secret), encoding="utf-8")
-        except Exception:
-            pass
+# Secure first-run secret key generation: guarantee strong key without static defaults
+if not settings.SECRET_KEY or len(settings.SECRET_KEY) < 32:
+    settings.SECRET_KEY = secrets.token_hex(32)
 
 # Ensure storage directories exist
 for directory in [

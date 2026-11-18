@@ -505,7 +505,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
+                    <th>Snapshot</th>
+                    <th>Timestamp</th>
                     <th>Activity</th>
                     <th>Peak Motion</th>
                     <th>Frames</th>
@@ -515,7 +516,40 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <tbody>
                   {recentEvents.map((ev) => (
                     <tr key={ev.id}>
-                      <td>{new Date(ev.start_time).toLocaleTimeString()}</td>
+                      <td style={{ width: '64px', padding: '0.4rem 0.5rem' }}>
+                        <div
+                          style={{
+                            width: '56px',
+                            height: '36px',
+                            borderRadius: '0.25rem',
+                            overflow: 'hidden',
+                            backgroundColor: '#0a0a0c',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => setActiveEvent(ev)}
+                          title="Click to view event details & video"
+                        >
+                          <img
+                            src={api.getEventThumbnailUrl(ev.id)}
+                            alt={`Event ${ev.id}`}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 600, fontSize: '0.8rem' }}>
+                          {new Date(ev.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {new Date(ev.start_time).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                        </div>
+                      </td>
                       <td>
                         <span className="badge badge-active">{ev.activity_state}</span>
                       </td>
@@ -525,9 +559,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <button
                           onClick={() => setActiveEvent(ev)}
                           className="btn btn-secondary btn-sm"
-                          style={{ padding: '0.2rem 0.5rem' }}
+                          style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
                         >
-                          View
+                          Inspect
                         </button>
                       </td>
                     </tr>

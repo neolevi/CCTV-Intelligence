@@ -1,6 +1,6 @@
 """Daily Surveillance Summary API routes."""
 import datetime
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
@@ -27,18 +27,29 @@ def validate_date_param(date_str: Optional[str]) -> str:
         )
 
 
+@router.get("/dates", response_model=List[schemas.DailySummaryDateItem])
+def get_available_summary_dates(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Retrieve all available surveillance dates for history navigation scoped to user."""
+    user_id = current_user.id if current_user.role != "admin" else None
+    return DailySummaryGenerator.get_available_dates(db=db, user_id=user_id)
+
+
 @router.get("/daily", response_model=schemas.DailySummaryOut)
 def get_daily_summary(
     date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieve today's surveillance summary or for a specified date."""
+    """Retrieve today's surveillance summary or for a specified date scoped to user."""
     valid_date = validate_date_param(date)
 
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
         date_str=valid_date,
+        user_id=current_user.id if current_user.role != "admin" else None,
         force_regenerate=False,
     )
     return summary_data
@@ -50,11 +61,12 @@ def get_daily_summary_by_date(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Retrieve daily summary by specific date (YYYY-MM-DD)."""
+    """Retrieve daily summary by specific date (YYYY-MM-DD) scoped to user."""
     valid_date = validate_date_param(date)
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
         date_str=valid_date,
+        user_id=current_user.id if current_user.role != "admin" else None,
         force_regenerate=False,
     )
     return summary_data
@@ -66,11 +78,12 @@ def generate_daily_summary(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Trigger on-demand recalculation and persistence of daily surveillance summary."""
+    """Trigger on-demand recalculation and persistence of daily surveillance summary scoped to user."""
     valid_date = validate_date_param(date)
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
         date_str=valid_date,
+        user_id=current_user.id if current_user.role != "admin" else None,
         force_regenerate=True,
     )
     return summary_data
@@ -87,6 +100,7 @@ def download_summary_report(
     summary_data = DailySummaryGenerator.get_or_generate_summary(
         db=db,
         date_str=valid_date,
+        user_id=current_user.id if current_user.role != "admin" else None,
         force_regenerate=False,
     )
 

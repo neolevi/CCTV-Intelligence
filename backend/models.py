@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from backend.database import Base
@@ -136,7 +137,8 @@ class DailySummary(Base):
     __tablename__ = "daily_summaries"
 
     id = Column(Integer, primary_key=True, index=True)
-    date = Column(String(10), unique=True, index=True, nullable=False)  # "YYYY-MM-DD"
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    date = Column(String(10), index=True, nullable=False)  # "YYYY-MM-DD"
     total_monitoring_seconds = Column(Float, default=0.0)
     active_seconds = Column(Float, default=0.0)
     idle_seconds = Column(Float, default=0.0)
@@ -150,6 +152,13 @@ class DailySummary(Base):
     peak_activity_hour = Column(Integer, nullable=True)  # 0 to 23
     narrative_summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="daily_summaries")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_user_daily_summary"),
+    )
 
 class SystemSetting(Base):
     __tablename__ = "settings"

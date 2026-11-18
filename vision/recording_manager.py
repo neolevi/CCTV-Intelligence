@@ -1,6 +1,7 @@
 """Recording manager for handling video clips, captured frames, and database event logging."""
 import datetime
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 import cv2
@@ -34,6 +35,13 @@ class RecordingManager:
         self.frame_width: int = settings.DEFAULT_FRAME_WIDTH
         self.frame_height: int = settings.DEFAULT_FRAME_HEIGHT
         self.recording_fps: float = float(settings.ACTIVE_SAMPLING_FPS)
+        self._lock = threading.Lock()
+        self._finalized = False
+
+    @property
+    def is_recording(self) -> bool:
+        """Returns True if a motion event recording is currently open."""
+        return self.current_event_id is not None
 
     def set_session_id(self, session_id: Optional[int]) -> None:
         """Assign current active monitoring session ID."""
@@ -53,28 +61,32 @@ class RecordingManager:
         - If state transitioned away from ACTIVE, finalizes the open recording event.
         - If is_sampled is True, saves the frame as an individual captured frame asset.
         """
-        now_dt = datetime.datetime.now()
-        date_str = now_dt.strftime("%Y-%m-%d")
+        with self._lock:
+            if self._finalized:
+                return
 
-        # 1. State is ACTIVE -> ensure event and video writer are started
-        if activity_state == "ACTIVE":
-            if self.current_event_id is None:
-                self._start_event(frame, motion_score, now_dt, date_str)
-            else:
-                self.peak_motion_score = max(self.peak_motion_score, motion_score)
+            now_dt = datetime.datetime.now()
+            date_str = now_dt.strftime("%Y-%m-%d")
 
-            # Write frame to video recording according to the adaptive sampling rate
-            if is_sampled and self.video_writer is not None:
-                self.video_writer.write(frame)
-                self.event_frame_count += 1
+            # 1. State is ACTIVE -> ensure event and video writer are started
+            if activity_state == "ACTIVE":
+                if self.current_event_id is None:
+                    self._start_event(frame, motion_score, now_dt, date_str)
+                else:
+                    self.peak_motion_score = max(self.peak_motion_score, motion_score)
 
-        # 2. State is not ACTIVE, but we had an ongoing event -> close it
-        elif self.current_event_id is not None:
-            self._close_event(now_dt)
+                # Write frame to video recording exactly once when sampled
+                if is_sampled and self.video_writer is not None and self.video_writer.isOpened():
+                    self.video_writer.write(frame)
+                    self.event_frame_count += 1
 
-        # 3. If this frame is selected by adaptive sampler, persist captured frame
-        if is_sampled:
-            self._save_captured_frame(frame, activity_state, motion_score, now_dt, date_str)
+            # 2. State is not ACTIVE, but we had an ongoing event -> close it
+            elif self.current_event_id is not None:
+                self._close_event(now_dt)
+
+            # 3. If this frame is selected by adaptive sampler, persist captured frame
+            if is_sampled:
+                self._save_captured_frame(frame, activity_state, motion_score, now_dt, date_str)
 
     def _start_event(
         self,
@@ -107,7 +119,7 @@ class RecordingManager:
                 start_time=now_dt,
                 peak_motion_score=motion_score,
                 activity_state="ACTIVE",
-                frame_count=1,
+                frame_count=0,
                 description=f"Motion detected on {self.camera_name}",
             )
             db.add(event)
@@ -152,10 +164,7 @@ class RecordingManager:
                 (w, h),
             )
 
-        # Write initial frame
-        if self.video_writer and self.video_writer.isOpened():
-            self.video_writer.write(frame)
-            self.event_frame_count = 1
+        self.event_frame_count = 0
 
     def _close_event(self, end_dt: datetime.datetime) -> None:
         """Close current active event, finalize video, and write Recording record."""
@@ -183,8 +192,8 @@ class RecordingManager:
                 ev.frame_count = self.event_frame_count
                 ev.peak_motion_score = self.peak_motion_score
 
-            # Insert Recording record
-            if self.current_video_path and self.current_video_path.exists():
+            # Insert Recording record only when actual frames were captured
+            if self.event_frame_count > 0 and self.current_video_path and self.current_video_path.exists():
                 recording = models.Recording(
                     user_id=self.user_id,
                     camera_id=self.camera_id,
@@ -199,6 +208,11 @@ class RecordingManager:
                     activity_state="ACTIVE",
                 )
                 db.add(recording)
+            elif self.event_frame_count == 0 and self.current_video_path and self.current_video_path.exists():
+                try:
+                    self.current_video_path.unlink()
+                except Exception:
+                    pass
 
             db.commit()
 
@@ -259,5 +273,8 @@ class RecordingManager:
 
     def finalize(self) -> None:
         """Flush and finalize any pending recordings on shutdown."""
-        if self.current_event_id is not None:
-            self._close_event(datetime.datetime.now())
+        with self._lock:
+            if not self._finalized:
+                self._finalized = True
+                if self.current_event_id is not None:
+                    self._close_event(datetime.datetime.now())

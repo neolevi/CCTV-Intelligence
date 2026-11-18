@@ -34,13 +34,13 @@ def get_analytics_overview(
         models.MotionEvent.start_time <= today_end,
     )
     if current_user.role != "admin":
-        ev_q = ev_q.filter((models.MotionEvent.user_id == current_user.id) | (models.MotionEvent.user_id == None))
+        ev_q = ev_q.filter(models.MotionEvent.user_id == current_user.id)
     events_today_count = ev_q.scalar() or 0
 
     # Scoped recordings count & bytes
     rec_q = db.query(models.Recording)
     if current_user.role != "admin":
-        rec_q = rec_q.filter((models.Recording.user_id == current_user.id) | (models.Recording.user_id == None))
+        rec_q = rec_q.filter(models.Recording.user_id == current_user.id)
     recordings = rec_q.all()
     recordings_count = len(recordings)
     total_rec_bytes = sum(r.file_size_bytes or 0 for r in recordings)
@@ -48,7 +48,7 @@ def get_analytics_overview(
     # Scoped frames
     frame_q = db.query(models.CapturedFrame)
     if current_user.role != "admin":
-        frame_q = frame_q.filter((models.CapturedFrame.user_id == current_user.id) | (models.CapturedFrame.user_id == None))
+        frame_q = frame_q.filter(models.CapturedFrame.user_id == current_user.id)
     frames = frame_q.all()
     total_frame_bytes = sum(f.file_size_bytes or 0 for f in frames)
     total_storage = total_rec_bytes + total_frame_bytes
@@ -59,7 +59,7 @@ def get_analytics_overview(
         models.MonitoringSession.start_time <= today_end,
     )
     if current_user.role != "admin":
-        sess_q = sess_q.filter((models.MonitoringSession.user_id == current_user.id) | (models.MonitoringSession.user_id == None))
+        sess_q = sess_q.filter(models.MonitoringSession.user_id == current_user.id)
     sessions_today = sess_q.all()
 
     active_sec = sum(s.active_duration_seconds or 0.0 for s in sessions_today if s.status == "completed")
@@ -79,7 +79,7 @@ def get_analytics_overview(
     # Monitoring hours this week
     week_q = db.query(models.MonitoringSession).filter(models.MonitoringSession.start_time >= week_start)
     if current_user.role != "admin":
-        week_q = week_q.filter((models.MonitoringSession.user_id == current_user.id) | (models.MonitoringSession.user_id == None))
+        week_q = week_q.filter(models.MonitoringSession.user_id == current_user.id)
     sessions_week = week_q.all()
 
     week_seconds = sum(
@@ -130,8 +130,12 @@ def get_analytics_trends(
         start_dt = datetime.datetime.combine(target_date, datetime.time.min)
         end_dt = datetime.datetime.combine(target_date, datetime.time.max)
 
-        # Check existing summary first
-        summary = db.query(models.DailySummary).filter(models.DailySummary.date == date_str).first()
+        # Check existing summary first scoped to user
+        summary_q = db.query(models.DailySummary).filter(models.DailySummary.date == date_str)
+        if current_user.role != "admin":
+            summary_q = summary_q.filter(models.DailySummary.user_id == current_user.id)
+        summary = summary_q.first()
+
         if summary:
             active_durations.append(round(summary.active_seconds / 60.0, 1))
             idle_durations.append(round(summary.idle_seconds / 60.0, 1))
@@ -140,7 +144,7 @@ def get_analytics_trends(
             cumulative_storage += summary.storage_consumed_bytes
             storage_trends.append(cumulative_storage)
         else:
-            # Query sessions & events directly
+            # Query sessions & events directly scoped to user
             sess_q = db.query(models.MonitoringSession).filter(
                 models.MonitoringSession.start_time <= end_dt,
                 (models.MonitoringSession.end_time == None) | (models.MonitoringSession.end_time >= start_dt),
@@ -150,14 +154,8 @@ def get_analytics_trends(
                 models.MotionEvent.start_time <= end_dt,
             )
             if current_user.role != "admin":
-                sess_q = sess_q.filter(
-                    (models.MonitoringSession.user_id == current_user.id)
-                    | (models.MonitoringSession.user_id == None)
-                )
-                ev_q = ev_q.filter(
-                    (models.MotionEvent.user_id == current_user.id)
-                    | (models.MotionEvent.user_id == None)
-                )
+                sess_q = sess_q.filter(models.MonitoringSession.user_id == current_user.id)
+                ev_q = ev_q.filter(models.MotionEvent.user_id == current_user.id)
 
             sessions = sess_q.all()
             ev_count = ev_q.scalar() or 0

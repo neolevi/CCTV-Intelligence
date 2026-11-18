@@ -25,7 +25,7 @@ def list_frames(
     query = db.query(models.CapturedFrame)
 
     if current_user.role != "admin":
-        query = query.filter((models.CapturedFrame.user_id == current_user.id) | (models.CapturedFrame.user_id == None))
+        query = query.filter(models.CapturedFrame.user_id == current_user.id)
 
     if activity_state:
         query = query.filter(models.CapturedFrame.activity_state == activity_state.upper())
@@ -88,12 +88,16 @@ def delete_frame(
     if current_user.role != "admin" and frame.user_id and frame.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this frame")
 
-    try:
+    if frame.file_path:
         p = Path(frame.file_path)
         if p.exists():
-            p.unlink()
-    except Exception:
-        pass
+            try:
+                p.unlink()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to delete frame image file from storage: {e}",
+                )
 
     db.delete(frame)
     db.commit()

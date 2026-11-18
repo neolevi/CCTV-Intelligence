@@ -4,13 +4,10 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 # --- Auth & User Schemas ---
-class UserBase(BaseModel):
+class UserCreate(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
-    full_name: Optional[str] = None
-    role: Optional[str] = "operator"
-
-class UserCreate(UserBase):
     password: str = Field(..., min_length=6, max_length=128)
+    full_name: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
@@ -20,8 +17,11 @@ class UserUpdatePassword(BaseModel):
     old_password: str
     new_password: str = Field(..., min_length=6, max_length=128)
 
-class UserOut(UserBase):
+class UserOut(BaseModel):
     id: int
+    email: str
+    full_name: Optional[str] = None
+    role: str
     is_active: bool
     created_at: datetime
 
@@ -166,8 +166,17 @@ class HourlyActivity(BaseModel):
     event_count: int
     active_minutes: float
 
+class DailySummaryDateItem(BaseModel):
+    date: str
+    total_events: int = 0
+    active_seconds: float = 0.0
+    total_monitoring_seconds: float = 0.0
+    storage_consumed_bytes: int = 0
+    has_summary: bool = False
+
 class DailySummaryOut(BaseModel):
     id: Optional[int] = None
+    user_id: Optional[int] = None
     date: str  # "YYYY-MM-DD"
     total_monitoring_seconds: float
     active_seconds: float
@@ -184,6 +193,7 @@ class DailySummaryOut(BaseModel):
     timeline_segments: List[TimelineSegment] = []
     hourly_distribution: List[HourlyActivity] = []
     important_events: List[MotionEventOut] = []
+    events: List[MotionEventOut] = []
 
     class Config:
         from_attributes = True

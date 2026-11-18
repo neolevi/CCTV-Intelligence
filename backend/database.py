@@ -63,6 +63,7 @@ def run_migrations(connection) -> None:
             ("file_size_bytes", "INTEGER DEFAULT 0"),
         ],
         "recordings": [("user_id", "INTEGER REFERENCES users(id)")],
+        "daily_summaries": [("user_id", "INTEGER REFERENCES users(id)")],
     }
 
     for table_name, cols_to_add in tables.items():
@@ -82,17 +83,31 @@ def run_migrations(connection) -> None:
         admin_row = cursor.fetchone()
         if admin_row:
             admin_id = admin_row[0]
-            for t in ["cameras", "monitoring_sessions", "motion_events", "captured_frames", "recordings"]:
+            for t in ["cameras", "monitoring_sessions", "motion_events", "captured_frames", "recordings", "daily_summaries"]:
                 cursor.execute(f"UPDATE {t} SET user_id = ? WHERE user_id IS NULL", (admin_id,))
     except Exception as e:
         logger.warning(f"Error backfilling user_id: {e}")
+
+    # Migrate daily_summaries unique index: replace UNIQUE index on date with composite UNIQUE on (user_id, date)
+    try:
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ix_daily_summaries_date'")
+        idx_row = cursor.fetchone()
+        if idx_row and "UNIQUE" in (idx_row[0] or "").upper():
+            cursor.execute("DROP INDEX IF EXISTS ix_daily_summaries_date")
+            cursor.execute("CREATE INDEX IF NOT EXISTS ix_daily_summaries_date ON daily_summaries (date)")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_user_daily_summary ON daily_summaries (user_id, date)")
+            logger.info("Migrated daily_summaries: replaced UNIQUE index on date with composite UNIQUE index on (user_id, date)")
+        else:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_user_daily_summary ON daily_summaries (user_id, date)")
+    except Exception as e:
+        logger.warning(f"Error updating daily_summaries index: {e}")
 
     connection.commit()
     cursor.close()
 
 
 def init_db() -> None:
-    """Create tables, run migrations, and initialize default records with robust error handling."""
+    """Create tables, run migrations, and initialize default records with robust error propagation."""
     from backend import models
     from backend.auth.security import get_password_hash
 
@@ -106,6 +121,7 @@ def init_db() -> None:
             run_migrations(raw_conn)
     except Exception as e:
         logger.error(f"Error during schema initialization or migration: {e}")
+        raise RuntimeError(f"Database schema initialization failed: {e}") from e
 
     try:
         # Populate default system settings and default admin user
@@ -113,10 +129,22 @@ def init_db() -> None:
             # Check default user
             admin = session.query(models.User).filter(models.User.email == settings.ADMIN_EMAIL).first()
             if not admin:
+                import secrets
+                initial_password = settings.ADMIN_PASSWORD
+                if not initial_password:
+                    initial_password = secrets.token_urlsafe(20)
+                    logger.warning("==================================================================")
+                    logger.warning("FIRST-RUN ADMIN SETUP: ADMIN_PASSWORD was not configured in .env.")
+                    logger.warning(f"Generated secure administrator credentials:")
+                    logger.warning(f"  Email:    {settings.ADMIN_EMAIL}")
+                    logger.warning(f"  Password: {initial_password}")
+                    logger.warning("Please record these credentials or define ADMIN_PASSWORD in .env.")
+                    logger.warning("==================================================================")
+
                 admin_user = models.User(
                     email=settings.ADMIN_EMAIL,
                     full_name="Surveillance Admin",
-                    hashed_password=get_password_hash(settings.ADMIN_DEFAULT_PASSWORD),
+                    hashed_password=get_password_hash(initial_password),
                     role="admin",
                     is_active=True,
                 )

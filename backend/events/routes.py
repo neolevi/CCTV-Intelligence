@@ -27,7 +27,7 @@ def list_events(
     query = db.query(models.MotionEvent)
 
     if current_user.role != "admin":
-        query = query.filter((models.MotionEvent.user_id == current_user.id) | (models.MotionEvent.user_id == None))
+        query = query.filter(models.MotionEvent.user_id == current_user.id)
 
     if date:
         try:
@@ -101,11 +101,24 @@ def get_event_thumbnail(
     if current_user.role != "admin" and event.user_id and event.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this event")
 
-    p = Path(event.thumbnail_path)
-    if not p.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail file missing on disk")
+    if event.thumbnail_path:
+        p = Path(event.thumbnail_path)
+        if p.exists():
+            return FileResponse(path=str(p), media_type="image/jpeg")
 
-    return FileResponse(path=str(p), media_type="image/jpeg")
+    # Fallback to first captured frame if thumbnail file is missing
+    first_frame = (
+        db.query(models.CapturedFrame)
+        .filter(models.CapturedFrame.event_id == event_id)
+        .order_by(models.CapturedFrame.timestamp.asc())
+        .first()
+    )
+    if first_frame and first_frame.file_path:
+        fp = Path(first_frame.file_path)
+        if fp.exists():
+            return FileResponse(path=str(fp), media_type="image/jpeg")
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail file missing on disk")
 
 
 @router.delete("/{event_id}")
@@ -123,12 +136,15 @@ def delete_event(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to delete this event")
 
     if event.thumbnail_path:
-        try:
-            p = Path(event.thumbnail_path)
-            if p.exists():
+        p = Path(event.thumbnail_path)
+        if p.exists():
+            try:
                 p.unlink()
-        except Exception:
-            pass
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to delete event thumbnail from storage: {e}",
+                )
 
     db.delete(event)
     db.commit()
