@@ -14,17 +14,23 @@ router = APIRouter(prefix="/api/summaries", tags=["Daily Summaries"])
 
 
 def validate_date_param(date_str: Optional[str]) -> str:
-    """Validate that date_str is formatted as YYYY-MM-DD, or return today's date."""
+    """Validate that date_str is formatted as YYYY-MM-DD and not in the future, or return today's date."""
+    today = datetime.date.today()
     if not date_str:
-        return datetime.datetime.now().strftime("%Y-%m-%d")
+        return today.strftime("%Y-%m-%d")
     try:
-        parsed = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        return parsed.strftime("%Y-%m-%d")
+        parsed = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid date format. Expected YYYY-MM-DD",
         )
+    if parsed > today:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Future dates are not available for daily summaries. Please select today ({today}) or a past date.",
+        )
+    return parsed.strftime("%Y-%m-%d")
 
 
 @router.get("/dates", response_model=List[schemas.DailySummaryDateItem])

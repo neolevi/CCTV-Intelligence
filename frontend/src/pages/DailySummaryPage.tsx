@@ -73,9 +73,13 @@ export const DailySummaryPage: React.FC = () => {
   };
 
   const handleNextDay = () => {
+    if (selectedDate >= todayStr) return;
     const d = new Date(selectedDate);
     d.setDate(d.getDate() + 1);
-    setSelectedDate(d.toISOString().slice(0, 10));
+    const nextStr = d.toISOString().slice(0, 10);
+    if (nextStr <= todayStr) {
+      setSelectedDate(nextStr);
+    }
   };
 
   const handleRegenerate = async () => {
@@ -146,8 +150,12 @@ export const DailySummaryPage: React.FC = () => {
     return filtered;
   }, [summary, filterMode, sortOrder]);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const isToday = selectedDate === todayStr;
+
+  const pastAvailableDates = useMemo(() => {
+    return availableDates.filter((item) => item.date <= todayStr);
+  }, [availableDates, todayStr]);
 
   return (
     <div className="page-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -172,10 +180,10 @@ export const DailySummaryPage: React.FC = () => {
               title="Browse previous days surveillance summaries"
             >
               <History size={15} />
-              <span>Previous Days ({availableDates.length})</span>
+              <span>Previous Days ({pastAvailableDates.length})</span>
             </button>
 
-            {/* Date Picker & Prev/Next */}
+            {/* Date Picker & Prev/Next (restricted to past dates & today) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
               <button onClick={handlePrevDay} className="btn btn-secondary btn-sm" title="Previous Day">
                 <ChevronLeft size={16} />
@@ -185,9 +193,24 @@ export const DailySummaryPage: React.FC = () => {
                 className="input"
                 style={{ padding: '0.35rem 0.65rem', fontSize: '0.85rem' }}
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
+                max={todayStr}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) return;
+                  if (val > todayStr) {
+                    setSelectedDate(todayStr);
+                  } else {
+                    setSelectedDate(val);
+                  }
+                }}
               />
-              <button onClick={handleNextDay} className="btn btn-secondary btn-sm" title="Next Day">
+              <button
+                onClick={handleNextDay}
+                disabled={selectedDate >= todayStr}
+                className="btn btn-secondary btn-sm"
+                title={selectedDate >= todayStr ? 'Future dates are disabled' : 'Next Day'}
+                style={selectedDate >= todayStr ? { opacity: 0.35, cursor: 'not-allowed' } : {}}
+              >
                 <ChevronRight size={16} />
               </button>
             </div>
@@ -209,13 +232,13 @@ export const DailySummaryPage: React.FC = () => {
           </div>
         </div>
 
-        {/* 2. Previous Days Quick-Select Bar */}
+        {/* 2. Previous Days Quick-Select Bar (strictly past dates & today) */}
         <div style={{ marginTop: '0.85rem', paddingTop: '0.85rem', borderTop: '1px solid var(--border-color)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.25rem' }}>
             <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
               Jump to Day:
             </span>
-            {availableDates.slice(0, 10).map((item) => {
+            {pastAvailableDates.slice(0, 10).map((item) => {
               const isSelected = item.date === selectedDate;
               const isDateToday = item.date === todayStr;
               let label = item.date;
@@ -303,7 +326,7 @@ export const DailySummaryPage: React.FC = () => {
                 paddingRight: '0.25rem',
               }}
             >
-              {availableDates.map((item) => {
+              {pastAvailableDates.map((item) => {
                 const isSelected = item.date === selectedDate;
                 return (
                   <div

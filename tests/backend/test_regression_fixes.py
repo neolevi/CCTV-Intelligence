@@ -604,14 +604,14 @@ def test_daily_summary_user_isolation(db):
         db.commit()
         db.refresh(u2)
 
-    test_date_str = "2026-12-15"
+    test_date_str = "2026-10-15"
     db.query(models.DailySummary).filter(models.DailySummary.date == test_date_str).delete()
     db.query(models.MotionEvent).filter(models.MotionEvent.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
     db.query(models.MonitoringSession).filter(models.MonitoringSession.user_id.in_([u1.id, u2.id])).delete(synchronize_session=False)
     db.commit()
 
-    t_start = datetime.datetime(2026, 12, 15, 10, 0, 0)
-    t_end = datetime.datetime(2026, 12, 15, 11, 0, 0)
+    t_start = datetime.datetime(2026, 10, 15, 10, 0, 0)
+    t_end = datetime.datetime(2026, 10, 15, 11, 0, 0)
 
     # Session for U1
     s1 = models.MonitoringSession(

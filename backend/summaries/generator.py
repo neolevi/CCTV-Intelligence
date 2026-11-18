@@ -403,7 +403,9 @@ class DailySummaryGenerator:
                 "has_summary": False,
             }
 
-        sorted_dates = sorted(date_map.values(), key=lambda x: x["date"], reverse=True)
+        # Filter out any future dates from historical available dates
+        past_and_today_dates = [item for item in date_map.values() if item["date"] <= today_str]
+        sorted_dates = sorted(past_and_today_dates, key=lambda x: x["date"], reverse=True)
         return sorted_dates
 
     @staticmethod

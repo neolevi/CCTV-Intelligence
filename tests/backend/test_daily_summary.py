@@ -189,3 +189,15 @@ def test_event_thumbnail_fallback_to_captured_frame(tmp_path):
         db.delete(cf)
         db.delete(ev)
         db.commit()
+
+
+def test_daily_summary_rejects_future_dates():
+    """Ensure requesting future dates returns HTTP 400 Bad Request."""
+    from fastapi import HTTPException
+    tomorrow_str = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    with SessionLocal() as db:
+        admin = db.query(models.User).filter(models.User.email == "admin@cctv.local").first()
+        with pytest.raises(HTTPException) as exc:
+            get_daily_summary(date=tomorrow_str, db=db, current_user=admin)
+        assert exc.value.status_code == 400
+        assert "Future dates are not available" in exc.value.detail
